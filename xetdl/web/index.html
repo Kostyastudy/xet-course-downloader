@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小鹅通课程下载器</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <h1>小鹅通课程下载器</h1>
+    <div class="meta">
+      <span id="ver" class="pill">—</span>
+      <span id="ffmpeg" class="pill">检测中…</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="notice" id="legal">
+    <strong>使用须知</strong>
+    <p id="legalText">仅供下载你自己已购买、平台允许下载的内容，用于个人离线学习。著作权归原权利人，请勿传播或商用。</p>
+  </div>
+
+  <section class="card">
+    <h2>① 装好"取数桥"（只需一次）</h2>
+    <p class="lead">下载器只负责搬运字节；「拿课程目录 + 签名播放地址」这一步必须在<strong>你已登录的小鹅通页面</strong>里执行。两种方式任选其一：</p>
+
+    <div class="two">
+      <div class="opt">
+        <h3>方式 A · 浏览器扩展<span class="tag">推荐</span></h3>
+        <ol>
+          <li>打开 Chrome / Edge → <code>chrome://extensions</code>（Edge 是 <code>edge://extensions</code>）</li>
+          <li>打开右上角「开发者模式」</li>
+          <li>点「加载已解压的扩展程序」，选择本项目的 <code>extension/</code> 目录</li>
+          <li>登录你的小鹅通店铺页面，点工具栏里的扩展图标</li>
+        </ol>
+        <p class="tip">扩展只做一件事：在登录页面里替你调用接口取目录和播放地址。它<b>不保存任何账号信息</b>，也拿不到你的 Cookie。</p>
+      </div>
+      <div class="opt">
+        <h3>方式 B · 一行控制台命令<span class="tag">不想装扩展</span></h3>
+        <p class="lead">在你已登录的小鹅通页面按 <kbd>F12</kbd> → 控制台，粘贴执行：</p>
+        <pre id="bridgeSnippet" class="snippet">（连接地址见下方）</pre>
+        <p class="tip">执行后回到本页刷新，即可看到课程列表。缺点是每次换浏览器要重来一次。</p>
+      </div>
+    </div>
+    <div class="row">
+      <label>本地服务地址</label>
+      <input id="bridgeBase" type="text" value="http://127.0.0.1:8777">
+      <button class="ghost" id="copySnippet">复制控制台命令</button>
+      <span id="bridgeState" class="pill muted">未连接</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 选择课程并下载</h2>
+    <div class="row">
+      <label>课程 / 专栏链接</label>
+      <input id="courseUrl" type="text" placeholder="https://<app_id>.h5.xet.pomoho.com/p/course/column/p_xxx">
+      <button id="btnParse" class="primary">读取目录</button>
+    </div>
+    <div id="parseMsg" class="msg"></div>
+    <div id="lessonBox" class="hidden">
+      <div class="row">
+        <button class="ghost" id="btnAll">全选</button>
+        <button class="ghost" id="btnNone">全不选</button>
+        <span class="muted" id="lessonCount"></span>
+        <span class="spacer"></span>
+        <label>保存到</label>
+        <input id="outDir" type="text" style="min-width:280px">
+        <button id="btnStart" class="primary">开始下载</button>
+      </div>
+      <div id="lessons" class="lessons"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ 任务进度</h2>
+    <div id="jobs" class="jobs"><p class="muted">暂无任务。</p></div>
+  </section>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

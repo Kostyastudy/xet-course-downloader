@@ -1,0 +1,25 @@
+# 下载产物（不要进仓库）
+*.mp4
+*.ts
+*.m3u8
+*.part
+.segs/
+下载计划.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地测试输出
+e2e_out/
+js_e2e_out/
+*.log

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "小鹅通课程下载器 · 取数桥",
+  "version": "1.0.0",
+  "description": "在已登录的小鹅通页面里读取课程目录与带签名的播放地址，交给本地下载器搬运。仅供个人离线学习使用。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://*.h5.xet.pomoho.com/*",
+    "https://*.xet.pomoho.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_title": "小鹅通课程下载器",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.h5.xet.pomoho.com/*", "https://*.xet.pomoho.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

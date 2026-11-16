@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<div class="pad">
+  <div class="row">
+    <b>小鹅通课程下载器</b>
+    <span class="spacer"></span>
+    <span id="state" class="pill">本地服务检测中…</span>
+  </div>
+
+  <div class="row">
+    <label>本地服务</label>
+    <input id="base" type="text" value="http://127.0.0.1:8777">
+  </div>
+
+  <div class="row">
+    <label>课程链接</label>
+    <input id="url" type="text" placeholder="留空则用当前页面">
+  </div>
+
+  <div class="row">
+    <button id="btnCollect" class="primary">读取目录</button>
+    <button id="openConsole" class="ghost">打开控制台</button>
+    <span id="msg" class="msg"></span>
+  </div>
+
+  <div id="lessonBox" class="hidden">
+    <div class="row small">
+      <span id="count"></span>
+      <span class="spacer"></span>
+      <button id="btnAll" class="ghost">全选</button>
+      <button id="btnNone" class="ghost">全不选</button>
+    </div>
+    <div id="lessons" class="lessons"></div>
+    <div class="row">
+      <label>保存到</label>
+      <input id="out" type="text" placeholder="默认 ~/小鹅通课程">
+    </div>
+    <div class="row">
+      <button id="btnSync" class="primary">同步到下载器</button>
+      <button id="btnStart">直接开始下载</button>
+    </div>
+  </div>
+
+  <div class="legal">
+    仅下载你已购买、平台允许下载的内容，供个人离线学习。请勿传播、转载或商用。
+  </div>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
