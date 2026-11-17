@@ -208,10 +208,15 @@ class Course(object):
         def key(l):
             return (date_key(l), l.index)
 
+        def gid_of(l):
+            # product_id 是专栏 id 的正主；group 是归档时派生的同一份 id。
+            # 两者都可能单独出现（老计划 / 手写计划），所以按优先顺序兜底。
+            return l.product_id or getattr(l, 'group', '') or ''
+
         groups = []
         if group:
             for l in self.lessons:
-                pid = l.product_id or ''
+                pid = gid_of(l)
                 if pid and pid not in groups:
                     groups.append(pid)
 
@@ -233,8 +238,9 @@ class Course(object):
             order.get(l.product_id, len(groups) + 1), kind_rank(l)) + date_key(l))
         counters = {}
         for i, l in enumerate(self.lessons):
-            pid = l.product_id or groups[0]
+            pid = gid_of(l) or groups[0]
             l.index = i + 1
+            l.product_id = pid
             l.group = pid
             l.group_name = names.get(pid) or pid
             counters[pid] = counters.get(pid, 0) + 1

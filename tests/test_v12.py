@@ -145,6 +145,31 @@ class TestColumnGrouping(unittest.TestCase):
         p = archiver.lesson_dir(root, a, c)
         self.assertIn('01_甲专栏', p)
 
+    def test_groups_detected_from_group_field_only(self):
+        """课时只带 group、没有 product_id 时也要认得出多专栏。
+
+        cdp_plan.json 这类抓取器产物字段叫 product_id，而手写/归一过的计划
+        可能只有 group；早前只查 product_id 会导致「9 个专栏被当成 0 个」，
+        全部平铺进一层。
+        """
+        d = {'title': '大课包', 'columns': [{'product_id': 'p_a', 'name': '甲专栏'},
+                                            {'product_id': 'p_b', 'name': '乙专栏'}],
+             'lessons': [
+                 {'rid': 'a0', 'title': '甲-1', 'rtype': 4,
+                  'start_at': '2025.01.01 09:00', 'group': 'p_a'},
+                 {'rid': 'b0', 'title': '乙-1', 'rtype': 4,
+                  'start_at': '2025.01.02 09:00', 'group': 'p_b'},
+             ]}
+        c = model.Course.from_dict(d)
+        c.sort()
+        self.assertEqual(len(c.columns), 2)
+        self.assertEqual([l.group for l in c.lessons], ['p_a', 'p_b'])
+        # 顺手把 product_id 补齐，后续所有按 product_id 判组的地方都不会再漏
+        self.assertEqual([l.product_id for l in c.lessons], ['p_a', 'p_b'])
+        root = os.path.join('X:', 'root')
+        paths = set(archiver.group_dir(root, c, l) for l in c.lessons)
+        self.assertEqual(len(paths), 2)
+
     def test_normalize_columns_from_plain_ids(self):
         """老版本扩展只发 ['p_xxx']，也要能归一成带名字的结构。"""
         cols = model.normalize_columns(['p_a', 'p_b'])
