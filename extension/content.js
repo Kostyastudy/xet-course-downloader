@@ -428,11 +428,17 @@
       }
       return null;
     }).then(function () {
-      /* --- S3：手动指定的专栏 id --- */
-      if (!lessons.length && opts.columnIds && opts.columnIds.length) {
-        trace.push('S3 手动指定 ' + opts.columnIds.length + ' 个专栏 id');
+      /* --- S3：手动指定的专栏 id ---
+       * 必须【总是】采集，不能只在前面全失败时才跑：
+       * 否则「URL 里那一个专栏 + 另外几个手动指定的专栏」只会拿到第一个，
+       * 其余的被静默跳过（实测踩到过：5 个专栏只拿到 1 个的 7 个课时）。 */
+      var extra = (opts.columnIds || []).filter(function (cid) {
+        return !colsUsed[cid] && cid !== parsed.pid;
+      });
+      if (extra.length) {
+        trace.push('S3 手动指定 ' + extra.length + ' 个专栏 id');
         var chain = Promise.resolve();
-        opts.columnIds.forEach(function (cid) {
+        extra.forEach(function (cid) {
           chain = chain.then(function () { return loadColumn(cid, 'S3'); });
         });
         return chain;
@@ -448,14 +454,30 @@
         throw err;
       }
 
-      /* 去重 */
+      /* 去重：同一节课可能同时挂在多个专栏下（实测：四川·分省讲座
+         同时出现在第一期/第二期分省讲座里）。只下一遍是对的，
+         但要把额外的专栏记下来，别静默吞掉。 */
       var seen = {}, uniq = [];
       lessons.forEach(function (l) {
-        if (seen[l.rid]) return;
-        seen[l.rid] = 1;
-        uniq.push(l);
+        if (!seen[l.rid]) {
+          seen[l.rid] = 1;
+          uniq.push(l);
+          return;
+        }
+        var first = uniq.filter(function (x) { return x.rid === l.rid; })[0];
+        if (first) {
+          first.also_in = first.also_in || [];
+          if (l.product_id && first.product_id && l.product_id !== first.product_id &&
+              first.also_in.indexOf(l.product_id) < 0) {
+            first.also_in.push(l.product_id);
+          }
+        }
       });
       lessons = uniq;
+      var dupCount = lessons.filter(function (l) { return l.also_in && l.also_in.length; }).length;
+      if (dupCount) {
+        trace.push('有 ' + dupCount + ' 节课同时挂在多个专栏下（只下了一遍）');
+      }
 
       var withUrls = opts.withUrls !== false;
       var withWare = opts.withWare !== false;
