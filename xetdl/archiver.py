@@ -126,8 +126,43 @@ def course_root(out_dir, course):
     return os.path.join(out_dir, safe_name(course.title))
 
 
-def lesson_dir(root, lesson):
-    return os.path.join(root, lesson.folder)
+def group_dir(root, course, lesson):
+    """多专栏（大课包）时，专栏各自一层目录；单专栏不分层。"""
+    if not getattr(lesson, 'group', ''):
+        return root
+    names = course.column_names()
+    order = []
+    for c in (course.columns or []):
+        pid = c.get('product_id') or ''
+        if pid:
+            order.append(pid)
+    gid = lesson.group
+    try:
+        n = order.index(gid) + 1
+    except ValueError:
+        n = 99
+    label = names.get(gid) or lesson.group_name or gid
+    return os.path.join(root, '%02d_%s' % (n, safe_name(label)))
+
+
+def lesson_dir(root, lesson, course=None):
+    """课时目录。传入 course 时，若课时属于某个子专栏会多套一层。"""
+    base = group_dir(root, course, lesson) if course is not None else root
+    return os.path.join(base, lesson.folder)
+
+
+def course_groups(course):
+    """[{group, name, lessons:[...]}]，保持专栏原顺序（单专栏时只有一个组）。"""
+    out = []
+    index = {}
+    for l in course.lessons:
+        gid = getattr(l, 'group', '') or ''
+        if gid not in index:
+            index[gid] = len(out)
+            out.append({'group': gid, 'name': (getattr(l, 'group_name', '') or gid),
+                        'lessons': []})
+        out[index[gid]]['lessons'].append(l)
+    return out
 
 
 def link_or_copy(src, dst):
@@ -151,27 +186,62 @@ def link_or_copy(src, dst):
         return 'copy'
 
 
+def find_existing_mp4(root, course, lesson):
+    """找这节课以前下过的 视频.mp4（分组改造前是平铺的，两处都要看）。
+
+    返回 (路径 or '', 大小字节)。
+    """
+    cands = [os.path.join(lesson_dir(root, lesson, course), '视频.mp4')]
+    cands.append(os.path.join(lesson_dir(root, lesson), '视频.mp4'))
+    for p in cands:
+        try:
+            if os.path.isfile(p):
+                return p, os.path.getsize(p)
+        except OSError:
+            pass
+    return '', 0
+
+
 def write_index(course, root, status=None):
-    """生成 00_课程总览.md。status: {rid: (state, note)}"""
+    """生成 00_课程总览.md。status: {rid: (state, note)}
+
+    多专栏（大课包）时按专栏分节，每节一张表；单专栏时只有一张总表。
+    """
     status = status or {}
     lines = ['# %s · 课程总览' % course.title, '']
     if course.source_url:
         lines += ['来源：<%s>' % course.source_url, '']
     if course.product_id:
         lines += ['产品 ID：`%s`' % course.product_id, '']
-    lines += ['| # | 课时 | 类型 | 开播时间 | 视频 | 课件 | 状态 |',
-              '|---|------|------|----------|------|------|------|']
-    for l in course.lessons:
-        ldir = lesson_dir(root, l)
-        has_v = '✅' if os.path.exists(os.path.join(ldir, '视频.mp4')) else '—'
-        wdir = os.path.join(ldir, '课件')
-        nw = len(os.listdir(wdir)) if os.path.isdir(wdir) else 0
-        st, note = status.get(l.rid, ('', ''))
-        mark = {'done': '✅', 'failed': '⚠️', 'skipped': '—'}.get(st, '…')
-        lines.append('| %02d | %s | %s | %s | %s | %s | %s %s |' % (
-            l.index, l.title, l.kind, l.start_at or '—', has_v,
-            ('%d 个' % nw) if nw else '—', mark, note or ''))
-    lines += ['', '## 使用须知', '', config.LEGAL_NOTICE, '']
+    groups = course_groups(course)
+    multi = len(groups) > 1
+    if multi:
+        lines += ['共 %d 个专栏、%d 个课时。' % (len(groups), len(course.lessons)), '',
+                  '| 专栏 | 课时数 |', '|------|--------|']
+        for g in groups:
+            lines.append('| %s | %d |' % (g['name'], len(g['lessons'])))
+        lines.append('')
+
+    head = ['| # | 课时 | 类型 | 开播时间 | 视频 | 课件 | 状态 |',
+            '|---|------|------|----------|------|------|------|']
+    for g in groups:
+        if multi:
+            lines += ['## %s' % g['name'], '']
+        lines += head
+        for l in g['lessons']:
+            ldir = lesson_dir(root, l, course)
+            has_v = '✅' if os.path.exists(os.path.join(ldir, '视频.mp4')) else '—'
+            wdir = os.path.join(ldir, '课件')
+            nw = len(os.listdir(wdir)) if os.path.isdir(wdir) else 0
+            st, note = status.get(l.rid, ('', ''))
+            mark = {'done': '✅', 'failed': '⚠️', 'skipped': '—'}.get(st, '…')
+            n = getattr(l, 'group_index', 0) or l.index
+            lines.append('| %02d | %s | %s | %s | %s | %s | %s %s |' % (
+                n, l.title, l.kind, l.start_at or '—', has_v,
+                ('%d 个' % nw) if nw else '—', mark, note or ''))
+        lines.append('')
+
+    lines += ['## 使用须知', '', config.LEGAL_NOTICE, '']
     with io.open(os.path.join(root, '00_课程总览.md'), 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines))
     return os.path.join(root, '00_课程总览.md')

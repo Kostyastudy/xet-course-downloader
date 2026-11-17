@@ -73,7 +73,9 @@
     ware:   '/xe.course.business_go.courseware_list.get/2.0.0',
     vod:    '/xe.course.business_go.video.mutli_line/1.0.0',
     lookback: '/_alive/v3/get_lookback_list?alive_id=',
-    goodsList: '/xe.micro_page.category_good.get/2.0.0'
+    goodsList: '/xe.micro_page.category_good.get/2.0.0',
+    /* 大课包目录（实测唯一能拿全子专栏的接口） */
+    topicItems: '/xe.course.business.topic.items.get/2.0.0'
   };
 
   /* ------------------------------------------------------------------ */
@@ -223,6 +225,51 @@
     return list;
   }
 
+  /* 大课包 -> 子专栏（首选）。实测大课包页自己就是这么调的：
+   * POST /xe.course.business.topic.items.get/2.0.0
+   *   body: bizData[column_id]=p_xxx & bizData[page_index]=1 & bizData[page_size]=8
+   *   → { code:0, data:{ total:14, list:[{resource_id, resource_title, ...}] } }
+   * 这是目前唯一能拿全子专栏的接口（goods.info.get 不返回子专栏）。 */
+  function findTopicColumns(pid, trace) {
+    var page = 1;
+    var all = [];
+    var total = 0;
+
+    function step() {
+      return api(EP.topicItems, {
+        column_id: pid, page_index: page, page_size: 50
+      }).then(function (j) {
+        if (!j || j.code !== 0) {
+          var w = 'topic.items.get code=' + (j && j.code);
+          if (trace) trace.push('   ' + w);
+          return { cols: [], why: w };
+        }
+        var d = j.data || {};
+        total = d.total || total;
+        var list = d.list || [];
+        for (var i = 0; i < list.length; i++) {
+          var it = list[i];
+          var cid = it.resource_id || it.product_id || it.column_id;
+          if (!cid || !/^p_[0-9a-z]+$/.test(cid)) continue;
+          all.push({
+            product_id: cid,
+            name: String(it.resource_title || it.product_name || it.title || ''),
+            count: it.item_resource_count || it.update_num || it.resource_count || 0
+          });
+        }
+        if (list.length >= 50 && page < 20) { page++; return step(); }
+        var why = 'topic.items.get 命中 ' + all.length + ' 个专栏（total=' + total + '）';
+        if (trace) trace.push('   ' + why);
+        return { cols: all, why: why };
+      }).catch(function (e) {
+        var w2 = 'topic.items.get 异常: ' + e.message;
+        if (trace) trace.push('   ' + w2);
+        return { cols: [], why: w2 };
+      });
+    }
+    return step();
+  }
+
   /* 大课包商品信息 —— 实测参数名是 resource_id */
   function goodsInfo(pid) {
     return api(EP.goods, { resource_id: pid }).then(function (j) {
@@ -370,6 +417,7 @@
     var lessons = [];
     var ware = [];
     var colsUsed = {};
+    var colNames = {};
 
     function pushItems(items, colPid) {
       for (var i = 0; i < items.length; i++) {
@@ -399,26 +447,36 @@
       });
     }
 
+    function nameColumn(pid, name) {
+      if (pid && name) colNames[pid] = String(name);
+    }
+
     /* --- S1：URL 里的 id 直接当专栏查 --- */
     return columnAll(parsed.pid).then(function (r) {
       trace.push('S1 column.items.get(' + parsed.pid + ') -> ' + r.why);
       if (r.ok) { colsUsed[parsed.pid] = true; pushItems(r.items, parsed.pid); return null; }
 
-      /* --- S2：大课包 -> 子专栏 --- */
+      /* --- S2：大课包 -> 子专栏 ---
+       * 顺序：topic.items.get（实测能拿全）→ goods.info.get → other_list */
       if (parsed.kind === 'program') {
-        return findChildColumns(parsed.pid, trace).then(function (g) {
-          trace.push('S2 ' + g.why);
-          if (!g.cols.length) {
-            return findChildColumnsByAvail(parsed.pid).then(function (a) {
-              trace.push('S2b ' + a.why);
-              return a.cols;
-            });
-          }
-          return g.cols;
+        return findTopicColumns(parsed.pid, trace).then(function (t) {
+          trace.push('S2 ' + t.why);
+          if (t.cols.length) return t.cols;
+          return findChildColumns(parsed.pid, trace).then(function (g) {
+            trace.push('S2b ' + g.why);
+            if (!g.cols.length) {
+              return findChildColumnsByAvail(parsed.pid).then(function (a) {
+                trace.push('S2c ' + a.why);
+                return a.cols;
+              });
+            }
+            return g.cols;
+          });
         }).then(function (cols) {
           if (!cols.length) return null;
           var chain = Promise.resolve();
           cols.forEach(function (c) {
+            nameColumn(c.product_id, c.name);
             chain = chain.then(function () {
               return loadColumn(c.product_id, 'S2 ' + (c.name || ''));
             });
@@ -511,6 +569,14 @@
         });
       });
       return chain.then(function () {
+        /* 专栏清单带名字：服务端要靠它把 187 节课分到 14 个专栏目录里。
+           没有名字的（比如 S1/S3 手动指定的）先用 id 占位，前端仍能分组。 */
+        var colList = [];
+        var keys = Object.keys(colsUsed);
+        for (var ci = 0; ci < keys.length; ci++) {
+          var cpid = keys[ci];
+          colList.push({ product_id: cpid, name: colNames[cpid] || cpid });
+        }
         return {
           ok: true,
           trace: trace,
@@ -520,7 +586,7 @@
             source_url: url,
             host: ORIGIN,
             app_id: parsed.appId,
-            columns: Object.keys(colsUsed),
+            columns: colList,
             lessons: lessons,
             courseware: ware
           }

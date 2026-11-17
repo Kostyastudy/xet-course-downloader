@@ -24,6 +24,7 @@ class Job(object):
         self.error = ''
         self.lessons = {}               # rid -> {state, done, total, bytes, message}
         self.logs = []
+        self.bytes_planned = 0          # 提交时给出的预计总体积（0 = 未估算）
         self._cancel = False
         self._lock = threading.Lock()
 
@@ -49,6 +50,10 @@ class Job(object):
 
     def snapshot(self):
         with self._lock:
+            lessons = dict(self.lessons)
+            done = sum(1 for v in lessons.values() if v.get('state') == 'done')
+            failed = sum(1 for v in lessons.values() if v.get('state') == 'failed')
+            got = sum(int(v.get('bytes') or 0) for v in lessons.values())
             return {
                 'id': self.id,
                 'title': self.course.title,
@@ -58,11 +63,13 @@ class Job(object):
                 'created': self.created,
                 'started': self.started,
                 'finished': self.finished,
-                'lessons': dict(self.lessons),
+                'lessons': lessons,
                 'logs': self.logs[-120:],
                 'total': len(self.course.lessons),
-                'done': sum(1 for v in self.lessons.values() if v.get('state') == 'done'),
-                'failed': sum(1 for v in self.lessons.values() if v.get('state') == 'failed'),
+                'done': done,
+                'failed': failed,
+                'bytes': got,
+                'bytes_planned': self.bytes_planned,
             }
 
 
@@ -147,13 +154,21 @@ def _download_videos(job, root, status):
                 l = q.get_nowait()
             except queue.Empty:
                 return
-            ldir = archiver.lesson_dir(root, l)
+            ldir = archiver.lesson_dir(root, l, job.course)
             os.makedirs(ldir, exist_ok=True)
             mp4 = os.path.join(ldir, '视频.mp4')
-            if os.path.exists(mp4) and os.path.getsize(mp4) > 1024 * 1024:
+            old, sz = archiver.find_existing_mp4(root, job.course, l)
+            if sz > 1024 * 1024:
                 job.set_lesson(l.rid, state='done', note='已存在')
                 status[l.rid] = ('skipped', '已存在')
                 job.log('[HAVE] %s' % l.title)
+                if old != mp4:
+                    # 老版本是平铺目录，这次分了组：把已有视频搬到新位置，不重下
+                    try:
+                        os.makedirs(ldir, exist_ok=True)
+                        archiver.link_or_copy(old, mp4)
+                    except Exception:
+                        pass
                 continue
 
             def prog(st, rid=l.rid):
@@ -195,7 +210,7 @@ def _download_courseware(job, root):
             return
         # 资料课时自己的目录
         holder = next((l for l in job.course.lessons if l.rid == cw.rid), None)
-        dest = (archiver.lesson_dir(root, holder) if holder
+        dest = (archiver.lesson_dir(root, holder, job.course) if holder
                 else os.path.join(root, '课件集合'))
         wdir = os.path.join(dest, '课件')
         job.log('课件：%s（%d 个文件）' % (cw.title, len(cw.files)))
@@ -209,6 +224,6 @@ def _download_courseware(job, root):
                 continue
             tgt = archiver.ware_to_lesson(name, videos)
             if tgt:
-                tdir = os.path.join(archiver.lesson_dir(root, tgt), '课件')
+                tdir = os.path.join(archiver.lesson_dir(root, tgt, job.course), '课件')
                 os.makedirs(tdir, exist_ok=True)
                 archiver.link_or_copy(src, os.path.join(tdir, name))

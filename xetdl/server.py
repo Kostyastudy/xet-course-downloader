@@ -18,10 +18,30 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from . import config
+from .estimate import estimator
 from .jobs import JobManager
 
 _manager = JobManager()
 _STATE = {'course': None, 'course_at': 0}
+
+
+def _disk_info(path):
+    """查磁盘剩余空间，用来提示「这 30 GB 下得下不下」。"""
+    out = {'path': path, 'ok': False, 'free': 0, 'total': 0}
+    probe = path
+    while probe and not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    if not probe or not os.path.isdir(probe):
+        probe = os.path.expanduser('~')
+    try:
+        u = shutil.disk_usage(probe)
+        out.update(ok=True, free=u.free, total=u.total, used=u.used, base=probe)
+    except Exception as e:
+        out['error'] = str(e)
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -79,6 +99,7 @@ class Handler(BaseHTTPRequestHandler):
                 'ffprobe': bool(shutil.which('ffprobe')),
                 'default_out': config.DEFAULT_OUT,
                 'legal': config.LEGAL_NOTICE,
+                'settings_path': config.SETTINGS_PATH,
             })
         if p == '/api/jobs':
             return self._json({'jobs': [j.snapshot() for j in _manager.list()]})
@@ -89,9 +110,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'error': 'not found'}, 404)
             return self._json(job.snapshot())
         if p == '/api/defaults':
-            return self._json({'out': config.DEFAULT_OUT,
-                              'threads': config.DEFAULT_THREADS,
-                              'jobs': config.DEFAULT_JOBS})
+            s = config.load_settings()
+            return self._json({'out': s['default_out'],
+                               'threads': s['threads'],
+                               'jobs': s['jobs'],
+                               'port': s['port'],
+                               'host': s['host'],
+                               'workers': s['sizing_workers'],
+                               'sample': s['sizing_sample'],
+                               'settings_path': config.SETTINGS_PATH,
+                               'settings_writable': config.settings_file_writable()})
+        if p == '/api/settings':
+            return self._json({'ok': True, 'settings': config.load_settings(),
+                               'path': config.SETTINGS_PATH})
+        if p == '/api/estimate':
+            return self._json(estimator.snapshot())
+        if p == '/api/disk':
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            path = (q.get('path') or [config.DEFAULT_OUT])[0]
+            return self._json(_disk_info(path))
         if p == '/api/courses':
             # 返回最近一次收到的计划 + 同步序号/时间。
             # 序号是必需的：否则客户端会把「上一轮留下的旧计划」误当成
@@ -112,17 +149,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
         if p == '/api/courses':
-            # 浏览器扩展 / 控制台桥把采集到的课程计划送进来
+            # 浏览器扩展 / 控制台桥把采集到的课程计划送进来。
+            # 存之前先归一：套上专栏分组（大课包 187 节课要分到 14 个专栏里），
+            # 并补齐专栏名字。这样前端拿到的就是可以直接分组展示的结构。
             body = self._body()
-            course = body.get('course') or body
-            if not course or not course.get('lessons'):
+            raw = body.get('course') or body
+            if not raw or not raw.get('lessons'):
                 return self._json({'error': 'empty course'}, 400)
-            _STATE['course'] = course
+            from .model import Course
+            course = Course.from_dict(raw)
+            course.sort()
+            course_dict = course.to_dict()
+            _STATE['course'] = course_dict
             _STATE['course_at'] = time.time()
             _STATE['course_seq'] = _STATE.get('course_seq', 0) + 1
-            return self._json({'ok': True, 'lessons': len(course.get('lessons') or []),
-                              'title': course.get('title'),
-                              'seq': _STATE['course_seq']})
+            estimator.reset()      # 换了课程，旧的估算结果作废
+            return self._json({'ok': True,
+                               'lessons': len(course_dict.get('lessons') or []),
+                               'columns': len(course_dict.get('columns') or []),
+                               'title': course_dict.get('title'),
+                               'seq': _STATE['course_seq']})
         if p == '/api/jobs':
             body = self._body()
             course = body.get('course')
@@ -132,8 +178,36 @@ class Handler(BaseHTTPRequestHandler):
             os.makedirs(out_dir, exist_ok=True)
             job = _manager.submit(course, out_dir,
                                   body.get('threads'), body.get('jobs'))
+            # 把前端传来的预计体积挂到任务上，进度条就能显示「已下 X / 预计 Y」
+            try:
+                job.bytes_planned = int(body.get('bytes_planned') or 0)
+            except (TypeError, ValueError):
+                job.bytes_planned = 0
             _manager.prune()
             return self._json(job.snapshot())
+        if p == '/api/estimate':
+            # 起一轮体积估算
+            body = self._body()
+            lessons = body.get('lessons') or []
+            if not lessons:
+                course = _STATE.get('course') or {}
+                lessons = [{'rid': l.get('rid'), 'title': l.get('title'),
+                            'playlist_url': l.get('playlist_url') or '',
+                            'vod_url': l.get('vod_url') or ''}
+                           for l in (course.get('lessons') or [])]
+            if not lessons:
+                return self._json({'error': '没有可估算的课时'}, 400)
+            ok = estimator.start(lessons, body.get('workers'), body.get('sample'))
+            return self._json({'ok': ok, 'state': estimator.snapshot()})
+        if p == '/api/estimate/cancel':
+            estimator.cancel()
+            return self._json(estimator.snapshot())
+        if p == '/api/settings':
+            body = self._body()
+            saved = config.save_settings(body)
+            return self._json({'ok': True, 'settings': saved,
+                               'path': config.SETTINGS_PATH,
+                               'note': '端口/默认目录等改了要重启 start.py 才生效'})
         if p.startswith('/api/jobs/') and p.endswith('/cancel'):
             jid = p.split('/')[3]
             job = _manager.get(jid)

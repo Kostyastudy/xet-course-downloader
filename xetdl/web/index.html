@@ -13,74 +13,149 @@
     <div class="meta">
       <span id="ver" class="pill">—</span>
       <span id="ffmpeg" class="pill">检测中…</span>
+      <span id="bridgeState" class="pill muted">未同步</span>
     </div>
   </div>
 </header>
 
 <div class="wrap">
 
-  <div class="notice" id="legal">
+  <div class="notice">
     <strong>使用须知</strong>
     <p id="legalText">仅供下载你自己已购买、平台允许下载的内容，用于个人离线学习。著作权归原权利人，请勿传播或商用。</p>
   </div>
 
-  <section class="card">
-    <h2>① 装好"取数桥"（只需一次）</h2>
-    <p class="lead">下载器只负责搬运字节；「拿课程目录 + 签名播放地址」这一步必须在<strong>你已登录的小鹅通页面</strong>里执行。两种方式任选其一：</p>
+  <!-- ============ 第 1 步：取数桥 ============ -->
+  <section class="card" id="step1">
+    <h2>① 让下载器拿到你的课程目录<span class="h2sub">只需一次</span></h2>
+    <p class="lead">下载器只负责搬字节。「课程目录 + 带签名的播放地址」必须在<strong>你已登录的小鹅通页面</strong>里取，两种方式任选其一。</p>
 
     <div class="two">
       <div class="opt">
         <h3>方式 A · 浏览器扩展<span class="tag">推荐</span></h3>
         <ol>
-          <li>打开 Chrome / Edge → <code>chrome://extensions</code>（Edge 是 <code>edge://extensions</code>）</li>
-          <li>打开右上角「开发者模式」</li>
-          <li>点「加载已解压的扩展程序」，选择本项目的 <code>extension/</code> 目录</li>
-          <li>登录你的小鹅通店铺页面，点工具栏里的扩展图标</li>
+          <li>打开 <code>edge://extensions</code>（Chrome 是 <code>chrome://extensions</code>）</li>
+          <li>打开「开发者模式」</li>
+          <li>点「加载已解压的扩展程序」→ 选择项目里的 <code>extension</code> 目录</li>
+          <li>在小鹅通页面点工具栏扩展图标 →「读取目录」→「同步到下载器」</li>
         </ol>
-        <p class="tip">扩展只做一件事：在登录页面里替你调用接口取目录和播放地址。它<b>不保存任何账号信息</b>，也拿不到你的 Cookie。</p>
+        <p class="tip">扩展只做取数，<b>不保存账号、拿不到 Cookie</b>。</p>
       </div>
       <div class="opt">
-        <h3>方式 B · 一行控制台命令<span class="tag">不想装扩展</span></h3>
-        <p class="lead">在你已登录的小鹅通页面按 <kbd>F12</kbd> → 控制台，粘贴执行：</p>
-        <pre id="bridgeSnippet" class="snippet">（连接地址见下方）</pre>
-        <p class="tip">执行后回到本页刷新，即可看到课程列表。缺点是每次换浏览器要重来一次。</p>
+        <h3>方式 B · 控制台一行命令<span class="tag">不想装扩展</span></h3>
+        <p class="lead">在已登录的小鹅通页面按 <kbd>F12</kbd> → 控制台，粘贴：</p>
+        <pre id="bridgeSnippet" class="snippet">（加载中…）</pre>
+        <div class="row tight">
+          <button class="ghost" id="copySnippet">复制</button>
+          <button class="ghost" id="copySnippetBig">复制进阶版（指定大课包）</button>
+        </div>
+        <p class="tip">进阶版会自动把<b>整包所有子专栏</b>（如大课包 14 个）一起取回。</p>
       </div>
-    </div>
-    <div class="row">
-      <label>本地服务地址</label>
-      <input id="bridgeBase" type="text" value="http://127.0.0.1:8777">
-      <button class="ghost" id="copySnippet">复制控制台命令</button>
-      <span id="bridgeState" class="pill muted">未连接</span>
     </div>
   </section>
 
+  <!-- ============ 第 2 步：挑课 ============ -->
   <section class="card">
-    <h2>② 选择课程并下载</h2>
-    <div class="row">
-      <label>课程 / 专栏链接</label>
-      <input id="courseUrl" type="text" placeholder="https://<app_id>.h5.xet.pomoho.com/p/course/column/p_xxx">
-      <button id="btnParse" class="primary">读取目录</button>
+    <h2>② 挑你要下载的内容</h2>
+
+    <div id="noCourse" class="empty">
+      <p>还没有课程目录。</p>
+      <p class="muted">按上面任一方式取一次数，这里就会出现可勾选的清单（会自动按专栏分组）。</p>
     </div>
-    <div id="parseMsg" class="msg"></div>
-    <div id="lessonBox" class="hidden">
-      <div class="row">
+
+    <div id="courseBox" class="hidden">
+      <div class="coursehead">
+        <div>
+          <div class="ctitle" id="courseTitle">—</div>
+          <div class="muted" id="courseMeta"></div>
+        </div>
+        <div class="row tight">
+          <button class="ghost" id="btnReload">刷新目录</button>
+        </div>
+      </div>
+
+      <div class="filters">
+        <input id="q" type="text" placeholder="搜索课时 / 专栏关键词…">
+        <select id="typeFilter">
+          <option value="">全部类型</option>
+          <option value="4">直播回放</option>
+          <option value="3">录播</option>
+          <option value="1">图文资料</option>
+        </select>
         <button class="ghost" id="btnAll">全选</button>
         <button class="ghost" id="btnNone">全不选</button>
-        <span class="muted" id="lessonCount"></span>
-        <span class="spacer"></span>
-        <label>保存到</label>
-        <input id="outDir" type="text" style="min-width:280px">
-        <button id="btnStart" class="primary">开始下载</button>
+        <button class="ghost" id="btnInvert">反选</button>
       </div>
-      <div id="lessons" class="lessons"></div>
+
+      <div class="filters">
+        <button id="btnEstimate" class="primary">估算体积</button>
+        <button class="ghost" id="btnEstimateAll">估算全部（含未选）</button>
+        <span id="estState" class="muted"></span>
+        <span class="spacer"></span>
+        <span id="pickStat" class="pill">已选 0 节</span>
+        <span id="sizeStat" class="pill">预计 —</span>
+        <span id="diskStat" class="pill muted">磁盘 —</span>
+      </div>
+      <div id="estBar" class="bar hidden"><i></i></div>
+
+      <div id="columns" class="cols"></div>
     </div>
   </section>
 
+  <!-- ============ 第 3 步：开下 ============ -->
   <section class="card">
-    <h2>③ 任务进度</h2>
+    <h2>③ 开始下载</h2>
+    <div class="row">
+      <label>保存到</label>
+      <input id="outDir" type="text" placeholder="默认 ~/小鹅通课程">
+      <button class="ghost" id="btnPickDefault">用默认目录</button>
+    </div>
+    <div class="row">
+      <label>同时下载</label>
+      <input id="jobsInput" type="number" min="1" max="8" value="2" class="num">
+      <label>每讲并发分片</label>
+      <input id="threadsInput" type="number" min="1" max="32" value="10" class="num">
+      <span class="spacer"></span>
+      <button id="btnStart" class="primary">开始下载</button>
+    </div>
+    <div id="startMsg" class="msg"></div>
+  </section>
+
+  <!-- ============ 任务 ============ -->
+  <section class="card">
+    <h2>④ 任务进度</h2>
     <div id="jobs" class="jobs"><p class="muted">暂无任务。</p></div>
   </section>
 
+  <!-- ============ 设置 ============ -->
+  <section class="card">
+    <h2>配置<span class="h2sub">改完重启生效</span></h2>
+    <p class="lead">存在 <code id="settingsPath">~/.xetdl/settings.json</code>，也可以直接点下面保存，不用改代码。</p>
+    <div class="grid2">
+      <div class="row">
+        <label>店铺域名</label>
+        <input id="cfgHost" type="text" placeholder="https://xxx.h5.xet.pomoho.com">
+      </div>
+      <div class="row">
+        <label>本地端口</label>
+        <input id="cfgPort" type="number" min="1024" max="65535" class="num">
+      </div>
+      <div class="row">
+        <label>体积估算并行</label>
+        <input id="cfgWorkers" type="number" min="1" max="16" class="num">
+      </div>
+      <div class="row">
+        <label>每节抽样分片</label>
+        <input id="cfgSample" type="number" min="2" max="40" class="num">
+      </div>
+    </div>
+    <div class="row">
+      <button class="primary" id="btnSaveCfg">保存配置</button>
+      <span id="cfgMsg" class="msg"></span>
+    </div>
+  </section>
+
+  <p class="footer muted">命令行的等价用法：<code>python start.py --run 下载计划.json --out D:\课程</code></p>
 </div>
 
 <script src="/static/app.js"></script>

@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
-"""全局配置与常量。"""
+"""全局配置与常量。
+
+所有「用户可改」的项都可以写进 settings.json（默认在用户主目录下的
+`.xetdl/settings.json`），不用改代码。改完重启 start.py 生效。
+"""
+import io
+import json
 import os
 import shutil
 
 APP_NAME = 'xet-course-downloader'
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 
 # ---- 小鹅通接口 ----
 HOST = 'https://appisa6gqvx4105.h5.xet.pomoho.com'
@@ -56,3 +62,86 @@ LEGAL_NOTICE = (
     '下载所得音视频与课件的著作权归原权利人所有，请勿传播、转载、上传至公开平台、'
     '或用于任何商业用途（不得商用）。二次分发前请先取得权利人授权。'
 )
+
+
+# ---- 用户配置文件（settings.json） ----
+SETTINGS_DIR = os.path.join(os.path.expanduser('~'), '.xetdl')
+SETTINGS_PATH = os.path.join(SETTINGS_DIR, 'settings.json')
+
+# 允许用户覆盖的键及其类型
+_SETTABLE = {
+    'default_out': str,       # 默认下载目录
+    'threads': int,           # 每讲并发分片数
+    'jobs': int,              # 同时下载几讲
+    'port': int,              # 本地控制台端口
+    'host': str,              # 小鹅通店铺域名（换店铺时改这里）
+    'sizing_workers': int,    # 体积估算并行数
+    'sizing_sample': int,     # 体积估算每节抽样的分片数
+}
+
+SETTINGS_DEFAULTS = {
+    'default_out': DEFAULT_OUT,
+    'threads': DEFAULT_THREADS,
+    'jobs': DEFAULT_JOBS,
+    'port': DEFAULT_PORT,
+    'host': HOST,
+    'sizing_workers': 4,
+    'sizing_sample': 8,
+}
+
+
+def load_settings():
+    """读 settings.json。文件不存在或坏了都返回默认值，不抛异常。"""
+    out = dict(SETTINGS_DEFAULTS)
+    try:
+        if os.path.isfile(SETTINGS_PATH):
+            with io.open(SETTINGS_PATH, 'r', encoding='utf-8') as f:
+                raw = json.load(f) or {}
+            for k, cast in _SETTABLE.items():
+                if k in raw and raw[k] not in (None, ''):
+                    try:
+                        out[k] = cast(raw[k])
+                    except (TypeError, ValueError):
+                        pass
+    except Exception:
+        pass
+    return out
+
+
+def save_settings(patch):
+    """把 patch 合并进 settings.json 并落盘。返回合并后的完整配置。"""
+    cur = load_settings()
+    for k, cast in _SETTABLE.items():
+        if k in (patch or {}) and patch[k] not in (None, ''):
+            try:
+                cur[k] = cast(patch[k])
+            except (TypeError, ValueError):
+                pass
+    try:
+        os.makedirs(SETTINGS_DIR, exist_ok=True)
+        with io.open(SETTINGS_PATH, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(cur, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+    return cur
+
+
+def settings_file_writable():
+    try:
+        os.makedirs(SETTINGS_DIR, exist_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+# 导入时套用用户配置（改完 settings.json 重启即可生效）
+_S = load_settings()
+DEFAULT_OUT = _S['default_out']
+DEFAULT_THREADS = _S['threads']
+DEFAULT_JOBS = _S['jobs']
+DEFAULT_PORT = _S['port']
+HOST = _S['host']
+DEFAULT_HOST = HOST
+SIZING_WORKERS = _S['sizing_workers']
+SIZING_SAMPLE = _S['sizing_sample']
+
