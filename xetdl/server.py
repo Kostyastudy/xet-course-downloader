@@ -93,7 +93,15 @@ class Handler(BaseHTTPRequestHandler):
                               'threads': config.DEFAULT_THREADS,
                               'jobs': config.DEFAULT_JOBS})
         if p == '/api/courses':
-            return self._json(_STATE.get('course') or {})
+            # 返回最近一次收到的计划 + 同步序号/时间。
+            # 序号是必需的：否则客户端会把「上一轮留下的旧计划」误当成
+            # 「这一轮刚采集到的」，导致抓取器假成功。
+            # 课程字段平铺在最外层，与旧的返回结构保持兼容。
+            course = dict(_STATE.get('course') or {})
+            course['lessons'] = course.get('lessons') or []
+            course['seq'] = _STATE.get('course_seq', 0)
+            course['at'] = _STATE.get('course_at', 0)
+            return self._json(course)
         if p == '/bridge.js':
             return self._bridge()
         if p == '/api/store':
@@ -111,8 +119,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'error': 'empty course'}, 400)
             _STATE['course'] = course
             _STATE['course_at'] = time.time()
+            _STATE['course_seq'] = _STATE.get('course_seq', 0) + 1
             return self._json({'ok': True, 'lessons': len(course.get('lessons') or []),
-                              'title': course.get('title')})
+                              'title': course.get('title'),
+                              'seq': _STATE['course_seq']})
         if p == '/api/jobs':
             body = self._body()
             course = body.get('course')

@@ -546,6 +546,20 @@ class TestAssets(unittest.TestCase):
                       'server.py 应把占位符替换成真实地址')
         self.assertIn(str(config.DEFAULT_PORT), srv)
 
+    def test_courses_api_carries_sync_seq(self):
+        """/api/courses 必须带 seq，否则客户端会把上一轮残留的旧计划
+        误当成这一轮刚采集到的（抓取器假成功）。"""
+        with io.open(os.path.join(ROOT, 'xetdl', 'server.py'),
+                     'r', encoding='utf-8') as f:
+            srv = f.read()
+        self.assertIn("course_seq", srv,
+                      'server.py 应维护 course_seq 同步序号')
+        self.assertIn("'seq'", srv,
+                      '/api/courses 的响应里应带 seq 字段')
+        # 序号必须在 POST 时自增
+        self.assertIn("course_seq', 0) + 1", srv,
+                      '每次同步都应让 course_seq 自增')
+
     def test_docs_exist(self):
         for f in ('README.md', 'LICENSE', '使用须知.md', 'start.py', '一键启动.bat'):
             self.assertTrue(os.path.exists(os.path.join(ROOT, f)), '缺少 %s' % f)
