@@ -90,6 +90,9 @@ fetch('http://127.0.0.1:8777/bridge.js').then(r=>r.text()).then(eval)
 （换浏览器 / 换店铺要重来一次；想指定课程链接用
 `fetch('http://127.0.0.1:8777/bridge.js?url=' + encodeURIComponent('你的课程链接')).then(r=>r.text()).then(eval)`）
 
+> 扩展和控制台桥跑的是**同一份** `extension/content.js`（本地服务在 `/bridge.js` 下发它），
+> 所以两条路的行为完全一致，不会出现「扩展能下、控制台桥不能下」这种跑偏。
+
 ### ② 选课、下载
 
 在控制台页面：
@@ -173,6 +176,30 @@ python -m unittest discover -s tests -v        # 跑单元测试
 
 ---
 
+## 平台接口实测结论（2026-11-17 真实抓包）
+
+工具的取数逻辑全部基于对真实小鹅通店铺的实测，不是猜的。**哪些接口要登录、哪些不要**，这一节是整份文档里最该先读的：
+
+| 接口 | 用途 | 免登录？ |
+|---|---|---|
+| `/xe.course.business_go.column.items.get/2.0.0` | 读专栏的课时列表 | ✅ **公开可读**，匿名也能拿全量 list |
+| `/xe.course.business_go.courseware_list.get/2.0.0` | 读课件附件清单 | ✅ 免登录，CDN 直链 |
+| `/xe.micro_page.category_good.get/2.0.0` | 读店铺商品清单 | ✅ 免登录（`category_goods_id` 必须是**字符串**） |
+| `/xe.course.business_go.goods.info.get/2.0.0` | 读大课包商品信息 | ✅ 免登录，但参数名是 **`resource_id`**（传 `product_id` 报 `code:10 参数错误`） |
+| `/_alive/v3/get_lookback_list?alive_id=…` | 直播回放 → 播放地址 | ❌ **需要登录**，未登录返回 `code:11302` |
+| `/xe.course.business_go.video.mutli_line/1.0.0` | 录播 → 播放地址 | ❌ **需要登录**（AES-128 加密清单，约 30 分钟过期） |
+
+**所以**：**目录和课件不用登录就能读全，只有「播放地址」这一步需要登录态**。
+这也是为什么工具把取数拆成两段（`withUrls` / `withWare` 可单独开关）——
+没登录也能先把「这门课有多少节、叫什么」看清楚。
+
+**大课包（一个专栏点进去是多个子专栏）**：
+`column.items.get` 对大课包会返回 `code:0` 但 `list` 为空，子专栏在 `goods.info.get` /
+`resource.available.get` 里。工具会先试目录、发现列表为空就自动转去商品信息分支，
+再用递归结构提取找出所有 `p_` 开头的子专栏 id（不依赖字段名，平台改字段也不会失效）。
+
+---
+
 ## 常见问题
 
 **Q：页面提示「本地服务未启动」？**
@@ -180,6 +207,17 @@ python -m unittest discover -s tests -v        # 跑单元测试
 
 **Q：点「读取目录」报错 / 读不到课时？**
 ① 确认你当前标签页是**已登录**的小鹅通店铺页面；② 确认这门课在你的「我的」里可见；③ 换个页面再点一次（扩展只在你主动点击时工作）。
+
+**Q：课时列表出来了，但「播放地址」全是空的 / 提示要登录？**
+目录和课件**免登录**就能读，**播放地址必须登录**（实测未登录返回 `code:11302`）。
+所以这说明：**你的取数页面不是登录态**。请：
+
+1. 确认当前小鹅通页面右上角显示的是**你的账号**（不是「登录」按钮）；
+2. 在同一个标签页重新执行一次取数；
+3. 扩展弹窗里展开「诊断 trace」能看到每个接口的真实返回码和错误码，按它定位。
+
+> 常见误判：Edge / Chrome 里打开过小鹅通 ≠ 已登录。游客态只有 `anony_token`，
+> 登录态才有 `user_id` + `ANONYLOGON:0`。以页面上有没有账号昵称为准。
 
 **Q：提示「⚠ 未找到 ffmpeg」？**
 没装 ffmpeg 就无法合并与校验视频。装好后**重启**控制台。
@@ -211,8 +249,11 @@ xet-course-downloader/
 │   ├── jobs.py           任务调度：进度、取消、断点续跑
 │   ├── server.py         本地 HTTP 服务（标准库）
 │   ├── cli.py            无界面命令行模式
-│   └── web/              网页控制台（index.html / app.js / bridge.js）
+│   └── web/              网页控制台（index.html / app.js）
 ├── extension/            MV3 浏览器扩展（只做取数桥）
+│   ├── content.js        取数核心 —— 扩展与控制台桥【共用同一份实现】
+│   ├── manifest.json
+│   └── popup.{html,js,css}
 ├── tests/                单元测试
 ├── 使用须知.md             合规提示
 └── LICENSE               MIT

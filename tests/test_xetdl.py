@@ -117,7 +117,7 @@ class TestXetApi(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['resource_title'], '第一讲')
         self.assertEqual(calls[0][0], config.EP_COLUMN_ITEMS)
-        self.assertEqual(calls[0][1]['page_size'], 200)
+        self.assertEqual(calls[0][1]['page_size'], 100)
         self.assertEqual(calls[0][2], 'POST')
 
     def test_lookback_picks_default_line(self):
@@ -139,6 +139,119 @@ class TestXetApi(unittest.TestCase):
             return {'data': [{'title': '讲义', 'type': 'pdf', 'url': 'http://x/a.pdf'}]}
         files = xetapi.courseware_list(fetcher, 'i_1')
         self.assertEqual(files[0]['url'], 'http://x/a.pdf')
+
+
+class TestXetApiV11(unittest.TestCase):
+    """v1.1.0 新增/修正的接口封装，全部基于 2026-11-17 的真实实测。"""
+
+    def test_goods_info_uses_resource_id(self):
+        """实测：goods.info.get 的参数名是 resource_id。
+        传 product_id 会得到 code:10「参数错误」。"""
+        calls = []
+
+        def fetcher(path, params, method):
+            calls.append((path, params, method))
+            return {'code': 0, 'data': {'resource_id': 'p_1', 'resource_type': 8}}
+
+        j = xetapi.goods_info(fetcher, 'p_1')
+        self.assertEqual(j['code'], 0)
+        self.assertEqual(calls[0][0], config.EP_GOODS_INFO)
+        self.assertEqual(calls[0][1]['resource_id'], 'p_1')
+        self.assertNotIn('product_id', calls[0][1])
+
+    def test_resource_available(self):
+        def fetcher(path, params, method):
+            return {'code': 0, 'data': {'other_list': [{'resource_id': 'p_2'}]}}
+
+        j = xetapi.resource_available(fetcher, 'p_1')
+        self.assertEqual(j['data']['other_list'][0]['resource_id'], 'p_2')
+
+    def test_store_goods_category_id_is_string(self):
+        """实测：category_goods_id 必须是字符串，用数字会报
+        buz_data.category_goods_id.string。"""
+        seen = {}
+
+        def fetcher(path, params, method, json_body=False):
+            seen['body'] = params
+            seen['json'] = json_body
+            return {'code': 0, 'data': {'list': [{'spu_id': 'p_1', 'title': '课'}]}}
+
+        j = xetapi.store_goods(fetcher, 'cg_69df550d6b94d_bDhMNoi',
+                               app_id='appisa6gqvx4105', micro_page_id='4760792')
+        self.assertEqual(j['code'], 0)
+        self.assertTrue(seen['json'], '店铺清单必须走 JSON body')
+        cg = seen['body']['buz_data']['category_goods_id']
+        self.assertIsInstance(cg, str)
+        self.assertEqual(cg, 'cg_69df550d6b94d_bDhMNoi')
+        self.assertEqual(seen['body']['buz_data']['micro_page_id'], '4760792')
+
+    def test_extract_columns_finds_nested_columns(self):
+        """通用结构提取：任意层级里的 p_ id 都要找出来。"""
+        data = {
+            'resource_id': 'p_big',
+            'items': [
+                {'product_id': 'p_c1', 'product_name': '专栏一', 'resource_count': 12},
+                {'nested': {'column_id': 'p_c2', 'title': '专栏二'}},
+                {'product_id': 'p_big'},          # 自身要排除
+                {'product_id': 'p_c1'},            # 重复
+            ],
+        }
+        cols = xetapi.extract_columns(data, exclude='p_big')
+        ids = sorted(c['product_id'] for c in cols)
+        self.assertEqual(ids, ['p_c1', 'p_c2'])
+        names = {c['product_id']: c['name'] for c in cols}
+        self.assertEqual(names['p_c1'], '专栏一')
+
+    def test_extract_columns_excludes_big_package(self):
+        """标记为「大课包/BSC」的节点不是子专栏。"""
+        data = {'children': [
+            {'product_id': 'p_big', 'resource_type_name': '大课包'},
+            {'product_id': 'p_real', 'resource_type_name': '专栏'},
+        ]}
+        cols = xetapi.extract_columns(data)
+        self.assertEqual([c['product_id'] for c in cols], ['p_real'])
+
+    def test_column_items_paged(self):
+        """满页就继续翻，不满页就停。"""
+        pages = {
+            1: [{'resource_id': 'l_%d' % i} for i in range(100)],
+            2: [{'resource_id': 'm_%d' % i} for i in range(100)],
+            3: [{'resource_id': 'z_1'}, {'resource_id': 'z_2'}],
+        }
+
+        def fetcher(path, params, method):
+            idx = int(params['page_index'])
+            return {'code': 0, 'data': {'list': pages.get(idx, [])}}
+
+        out = xetapi.column_items_paged(fetcher, 'p_1', page_size=100)
+        self.assertEqual(len(out), 202)
+        self.assertEqual(out[0]['resource_id'], 'l_0')
+        self.assertEqual(out[-1]['resource_id'], 'z_2')
+
+    def test_column_items_paged_stops_on_error(self):
+        def fetcher(path, params, method):
+            return {'code': 10, 'msg': '参数错误', 'data': {}}
+
+        self.assertEqual(xetapi.column_items_paged(fetcher, 'p_1'), [])
+
+    def test_lookback_returns_none_when_auth_required(self):
+        """实测：未登录访问 get_lookback_list 返回 code:11302（风控）。"""
+        def fetcher(path, params, method):
+            return {'code': config.LOOKBACK_AUTH_REQUIRED_CODE, 'data': []}
+
+        self.assertIsNone(xetapi.lookback_url(fetcher, 'l_1'))
+
+    def test_api_call_supports_both_fetcher_signatures(self):
+        def f3(path, params, method):
+            return {'code': 0, 'three': True}
+
+        def f4(path, params, method, json_body=False):
+            return {'code': 0, 'four': True, 'json': json_body}
+
+        self.assertTrue(xetapi.api_call(f3, '/x')['three'])
+        r = xetapi.api_call(f4, '/x', json_body=True)
+        self.assertTrue(r['four'])
+        self.assertTrue(r['json'])
 
 
 # ---------------------------------------------------------------- 下载器
@@ -392,19 +505,46 @@ class TestAssets(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(ROOT, 'extension', 'popup.js')))
 
     def test_js_contract_matches_config(self):
-        """扩展与控制台桥用到的接口，必须和 config 里的一致。"""
-        for js in ('extension/content.js', 'xetdl/web/bridge.js'):
-            p = os.path.join(ROOT, js.replace('/', os.sep))
-            with io.open(p, 'r', encoding='utf-8') as f:
-                text = f.read()
-            for ep in (config.EP_COLUMN_ITEMS, config.EP_COURSEWARE,
-                       config.EP_VOD_LINES, config.EP_LOOKBACK):
-                self.assertIn(ep, text, '%s 缺少接口 %s' % (js, ep))
+        """扩展与控制台桥共用 extension/content.js，接口必须和 config 一致。"""
+        p = os.path.join(ROOT, 'extension', 'content.js')
+        with io.open(p, 'r', encoding='utf-8') as f:
+            text = f.read()
+        for ep in (config.EP_COLUMN_ITEMS, config.EP_COURSEWARE,
+                   config.EP_VOD_LINES, config.EP_LOOKBACK,
+                   config.EP_GOODS_INFO, config.EP_RESOURCE_AVAILABLE,
+                   config.EP_STORE_GOODS):
+            self.assertIn(ep, text, 'content.js 缺少接口 %s' % ep)
+
+    def test_bridge_is_served_from_content_js(self):
+        """v1.1.0：不再有独立的 xetdl/web/bridge.js，
+        本地服务直接下发 extension/content.js（保证两份实现不跑偏）。"""
+        old = os.path.join(ROOT, 'xetdl', 'web', 'bridge.js')
+        self.assertFalse(os.path.exists(old),
+                         '旧的 xetdl/web/bridge.js 应删掉，避免两份实现不一致')
+        with io.open(os.path.join(ROOT, 'extension', 'content.js'),
+                     'r', encoding='utf-8') as f:
+            text = f.read()
+        self.assertIn('__XETDL_LOCAL__', text,
+                      'content.js 里应保留 __XETDL_LOCAL__ 占位符')
+
+    def test_goods_param_is_resource_id(self):
+        """实测：goods.info.get 的参数名是 resource_id，不是 product_id。"""
+        with io.open(os.path.join(ROOT, 'extension', 'content.js'),
+                     'r', encoding='utf-8') as f:
+            text = f.read()
+        self.assertIn("'resource_id'", text,
+                      'content.js 应先用 resource_id 试 goods.info.get')
+        self.assertIn('参数错误', text,
+                      'content.js 应记录 code:10「参数错误」这类失败原因')
 
     def test_bridge_port_matches_config(self):
-        p = os.path.join(ROOT, 'xetdl', 'web', 'bridge.js')
-        with io.open(p, 'r', encoding='utf-8') as f:
-            self.assertIn(str(config.DEFAULT_PORT), f.read())
+        """服务端下发时会把占位符换成本地地址。"""
+        with io.open(os.path.join(ROOT, 'xetdl', 'server.py'),
+                     'r', encoding='utf-8') as f:
+            srv = f.read()
+        self.assertIn('__XETDL_LOCAL__', srv,
+                      'server.py 应把占位符替换成真实地址')
+        self.assertIn(str(config.DEFAULT_PORT), srv)
 
     def test_docs_exist(self):
         for f in ('README.md', 'LICENSE', '使用须知.md', 'start.py', '一键启动.bat'):

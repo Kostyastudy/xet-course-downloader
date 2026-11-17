@@ -23,9 +23,28 @@
   </div>
 
   <div class="row">
+    <label>专栏 id</label>
+    <input id="colIds" type="text" placeholder="可选，逗号分隔，如 p_68e8...,p_692f...">
+  </div>
+
+  <div class="row">
+    <label class="chk"><input id="withUrls" type="checkbox" checked> 取播放地址</label>
+    <label class="chk"><input id="withWare" type="checkbox" checked> 取课件</label>
+  </div>
+
+  <div class="row">
     <button id="btnCollect" class="primary">读取目录</button>
     <button id="openConsole" class="ghost">打开控制台</button>
     <span id="msg" class="msg"></span>
+  </div>
+
+  <div id="traceBox" class="hidden">
+    <div class="row small">
+      <span>诊断</span>
+      <span class="spacer"></span>
+      <button id="btnTrace" class="ghost">展开/收起</button>
+    </div>
+    <pre id="trace" class="trace"></pre>
   </div>
 
   <div id="lessonBox" class="hidden">

@@ -95,7 +95,10 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/courses':
             return self._json(_STATE.get('course') or {})
         if p == '/bridge.js':
-            return self._static('bridge.js')
+            return self._bridge()
+        if p == '/api/store':
+            # 店铺商品清单（匿名可读，但需要 category_goods_id）
+            return self._json({'error': 'use the browser bridge for store listing'})
         return self._json({'error': 'not found'}, 404)
 
     def do_POST(self):
@@ -158,6 +161,25 @@ class Handler(BaseHTTPRequestHandler):
             ctype += '; charset=utf-8'
         with open(full, 'rb') as f:
             self._send(200, f.read(), ctype)
+
+    # ---------- 取数桥 ----------
+    def _bridge(self):
+        """下发 extension/content.js —— 扩展与控制台桥共用同一份实现。
+
+        只把 __XETDL_LOCAL__ 占位符换成本服务的真实地址，
+        这样用户在 8777 以外的端口启动时也能用。
+        """
+        src = os.path.join(config.EXT_DIR, 'content.js')
+        if not os.path.isfile(src):
+            return self._json({'error': 'content.js not found'}, 404)
+        try:
+            with open(src, 'r', encoding='utf-8') as f:
+                code = f.read()
+        except Exception as e:
+            return self._json({'error': str(e)}, 500)
+        local = 'http://%s:%d' % (config.HOST_BIND, self.server.server_address[1])
+        code = code.replace('__XETDL_LOCAL__', local)
+        self._send(200, code, 'application/javascript; charset=utf-8')
 
 
 class ThreadedServer(socketserver.ThreadingMixIn, HTTPServer):

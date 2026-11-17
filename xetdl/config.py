@@ -4,7 +4,7 @@ import os
 import shutil
 
 APP_NAME = 'xet-course-downloader'
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 
 # ---- 小鹅通接口 ----
 HOST = 'https://appisa6gqvx4105.h5.xet.pomoho.com'
@@ -13,6 +13,13 @@ EP_COURSEWARE = '/xe.course.business_go.courseware_list.get/2.0.0'
 EP_VOD_LINES = '/xe.course.business_go.video.mutli_line/1.0.0'
 EP_LOOKBACK = '/_alive/v3/get_lookback_list?alive_id='
 EP_SUBSCRIBE_CHECK = '/xe.course.business_go.subscribe.check.get/2.0.0'
+# 实测（2026-11-17）：大课包商品信息的参数名是 resource_id，不是 product_id
+EP_GOODS_INFO = '/xe.course.business_go.goods.info.get/2.0.0'
+EP_RESOURCE_AVAILABLE = '/xe.course.business_go.resource.available.get/2.0.0'
+# 店铺商品清单（找有哪些课可下）
+EP_STORE_GOODS = '/xe.micro_page.category_good.get/2.0.0'
+# 实测：目录接口公开可读；播放地址需要登录态（11302 = 未登录风控）
+LOOKBACK_AUTH_REQUIRED_CODE = 11302
 
 # 常见的公开商城域（不同店铺 app_id 不同，host 形如 https://<app_id>.h5.xet.pomoho.com）
 DEFAULT_HOST = HOST
@@ -24,6 +31,7 @@ HOST_BIND = '127.0.0.1'
 # ---- 目录 ----
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(HERE, 'xetdl', 'web')
+EXT_DIR = os.path.join(HERE, 'extension')
 
 # 默认下载根目录：用户主目录 / 小鹅通课程
 DEFAULT_OUT = os.path.join(os.path.expanduser('~'), '小鹅通课程')

@@ -1,7 +1,12 @@
 /* 小鹅通课程下载器 —— 扩展弹窗
  *
- * 职责：确认本地服务在线 → 在当前已登录页面里采集目录 → 把计划交给本地下载器。
+ * 职责：确认本地服务在线 → 在当前已登录页面里采集目录与播放地址
+ *      → 把计划交给本地下载器。
  * 扩展自身不搬运任何视频字节，也不保存任何账号信息。
+ *
+ * 取数分两段（实测结论）：
+ *   · 课程目录   —— 公开可读，未登录也能拿到
+ *   · 播放地址   —— 需要登录态；取不到时会明确提示「请先登录小鹅通」
  */
 (function () {
   'use strict';
@@ -37,10 +42,10 @@
     el.className = 'msg' + (cls ? ' ' + cls : '');
   }
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
+  function showTrace(lines) {
+    if (!lines || !lines.length) { $('traceBox').classList.add('hidden'); return; }
+    $('trace').textContent = lines.join('\n');
+    $('traceBox').classList.remove('hidden');
   }
 
   /* ---------------- 本地服务探测 ---------------- */
@@ -66,9 +71,15 @@
     });
   }
 
-  function sendCollect(tab, url) {
+  function parseIds(s) {
+    return String(s || '').split(',')
+      .map(function (x) { return x.trim(); })
+      .filter(function (x) { return /^[a-z]_[0-9a-z]+$/i.test(x); });
+  }
+
+  function sendCollect(tab, payload) {
     return new Promise(function (resolve) {
-      chrome.tabs.sendMessage(tab.id, { action: 'collect', url: url }, function (res) {
+      chrome.tabs.sendMessage(tab.id, payload, function (res) {
         var err = chrome.runtime.lastError;
         if (err) { resolve({ ok: false, error: err.message }); return; }
         resolve(res);
@@ -90,25 +101,44 @@
     state.busy = true;
     $('btnCollect').disabled = true;
     setMsg('正在读取课程目录…');
+    showTrace(null);
+
+    var payload = {
+      action: 'collect',
+      url: $('url').value.trim(),
+      columnIds: parseIds($('colIds').value),
+      withUrls: $('withUrls').checked,
+      withWare: $('withWare').checked
+    };
 
     activeTab().then(function (tab) {
       if (!tab) { setMsg('拿不到当前标签页', 'err'); return null; }
-      var url = $('url').value.trim();
-      return sendCollect(tab, url).then(function (res) {
+      return sendCollect(tab, payload).then(function (res) {
         if (res && res.ok) return res;
         // 页面里没有 content script（比如不是小鹅通域名）→ 注入一次再试
         return injectContent(tab).then(function (ok) {
           if (!ok) return { ok: false, error: '无法在该页面注入脚本' };
-          return sendCollect(tab, url);
+          return sendCollect(tab, payload);
         });
       }).then(function (res) {
         if (!res) return;
+        showTrace(res.trace);
         if (!res.ok) { setMsg((res && res.error) || '读取失败', 'err'); return; }
         state.course = res.course;
         state.selected = {};
         (res.course.lessons || []).forEach(function (l) { state.selected[l.rid] = true; });
         render();
-        setMsg('读到 ' + (res.course.lessons || []).length + ' 个课时', 'ok');
+        var withUrl = payload.withUrls;
+        var noUrl = (res.course.lessons || []).filter(function (l) {
+          return l.rtype !== 1 && !l.playlist_url && !l.vod_url;
+        }).length;
+        if (withUrl && noUrl) {
+          setMsg('读到 ' + (res.course.lessons || []).length +
+                 ' 个课时，但 ' + noUrl + ' 个拿不到播放地址 —— 请先在小鹅通登录',
+                 'err');
+        } else {
+          setMsg('读到 ' + (res.course.lessons || []).length + ' 个课时', 'ok');
+        }
       });
     }).catch(function (e) {
       setMsg(String(e && e.message ? e.message : e), 'err');
@@ -159,6 +189,11 @@
   $('btnNone').onclick = function () {
     state.selected = {};
     render();
+  };
+
+  $('btnTrace').onclick = function () {
+    var pre = $('trace');
+    pre.classList.toggle('collapsed');
   };
 
   /* ---------------- 交给本地下载器 ---------------- */
