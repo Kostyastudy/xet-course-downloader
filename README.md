@@ -375,9 +375,39 @@ xet-course-downloader/
 │   ├── manifest.json
 │   └── popup.{html,js,css}
 ├── tests/                单元测试
+├── packaging/            打包成 exe（PyInstaller spec + build.py）
+├── skills/               给 AI Agent 用的技能包（见下节）
 ├── 使用须知.md             合规提示
 └── LICENSE               MIT
 ```
+
+---
+
+## 给 AI Agent 用（skills/）
+
+`skills/xet-course-downloader/` 是一份可直接被 AI Agent 加载的
+[Agent Skill](https://docs.claude.com/en/docs/claude-code/skills)：把这套已经跑通的
+实现路径、接口契约和踩坑清单沉淀成结构化上下文，让 Agent 复现时少走弯路。
+
+它不包含可执行代码，只包含「怎么做、为什么这么做、哪里一定会错」。
+
+```
+skills/xet-course-downloader/
+├── SKILL.md                        # 主文件：适用前提 / 架构 / 流程 / 排查表 / 验收标准
+└── references/
+    ├── platform-api.md             # 7 个接口的实测契约（参数名、坑、返回结构）
+    ├── download-engine.md          # 并发分片 + AES-128 解密 + ffprobe 校验的实现要点
+    ├── packaging-exe.md            # PyInstaller 内置 ffmpeg 的打包路径
+    └── pitfalls.md                 # 25 条实测踩坑，按「会不会卡住半天」排序
+```
+
+**怎么用**：把 `skills/xet-course-downloader/` 整个目录拷到 Agent 的 skills 目录下
+（例如 `~/.minimax/skills/` 或项目的 `.minimax/skills/`），Agent 会自动按
+description 里的触发词匹配加载；也可以在对话里直接说「用 xet-course-downloader 这个技能」。
+
+它覆盖的典型问题：为什么播放地址总返回 `11302`、大课包为什么只读到一层、
+下载为什么只有 0.8 倍速、合并后为什么损坏、Windows 上为什么两个实例抢同一端口、
+PyInstaller 为什么找不到 `start.py`。
 
 ---
 
