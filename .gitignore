@@ -23,3 +23,10 @@ Thumbs.db
 e2e_out/
 js_e2e_out/
 *.log
+
+# 打包产物（exe 走 GitHub Release，绝不进仓库：单文件 >100MiB 会被硬拒）
+dist/
+packaging/_work/
+packaging/bin/
+*.exe
+

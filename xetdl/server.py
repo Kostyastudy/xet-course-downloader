@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from . import config
@@ -22,7 +23,43 @@ from .estimate import estimator
 from .jobs import JobManager
 
 _manager = JobManager()
-_STATE = {'course': None, 'course_at': 0}
+_STATE = {'course': None, 'course_at': 0, 'course_seq': 0}
+# 取数桥的中间进度（只有内存态，供控制台显示「已解析 n/m」）
+_BRIDGE = {'done': 0, 'total': 0, 'step': '', 'at': 0}
+
+
+def _load_cache():
+    """服务重启后从磁盘恢复上一次的课程目录。
+
+    没有这一条，每次开控制台都要重跑一次全量采集（192 节要好几分钟）。
+    缓存坏了就当没有，绝不影响启动。
+    """
+    try:
+        if not os.path.isfile(config.CACHE_PATH):
+            return
+        with io.open(config.CACHE_PATH, 'r', encoding='utf-8') as f:
+            d = json.load(f) or {}
+        if d.get('lessons'):
+            _STATE['course'] = d
+            try:
+                _STATE['course_at'] = os.path.getmtime(config.CACHE_PATH)
+            except OSError:
+                _STATE['course_at'] = time.time()
+            _STATE['course_seq'] = 1
+    except Exception:
+        pass
+
+
+def _save_cache():
+    try:
+        os.makedirs(config.SETTINGS_DIR, exist_ok=True)
+        with io.open(config.CACHE_PATH, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(_STATE.get('course') or {}, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+_load_cache()
 
 
 def _disk_info(path):
@@ -95,8 +132,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/health':
             return self._json({
                 'ok': True, 'version': config.VERSION,
-                'ffmpeg': bool(shutil.which('ffmpeg')),
-                'ffprobe': bool(shutil.which('ffprobe')),
+                'ffmpeg': config.tool_ok(config.FFMPEG),
+                'ffprobe': config.tool_ok(config.FFPROBE),
+                'ffmpeg_path': config.FFMPEG,
+                'ffprobe_path': config.FFPROBE,
+                'flavor': config.FLAVOR,          # 'py' / 'exe'
+                'bundled': config.FROZEN,         # True = ffmpeg 内置
+                'port': self.server.server_address[1],
                 'default_out': config.DEFAULT_OUT,
                 'legal': config.LEGAL_NOTICE,
                 'settings_path': config.SETTINGS_PATH,
@@ -141,6 +183,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(course)
         if p == '/bridge.js':
             return self._bridge()
+        if p == '/api/bridge/progress':
+            return self._json(dict(_BRIDGE))
+        if p == '/api/export-extension':
+            return self._export_extension()
         if p == '/api/store':
             # 店铺商品清单（匿名可读，但需要 category_goods_id）
             return self._json({'error': 'use the browser bridge for store listing'})
@@ -164,6 +210,7 @@ class Handler(BaseHTTPRequestHandler):
             _STATE['course_at'] = time.time()
             _STATE['course_seq'] = _STATE.get('course_seq', 0) + 1
             estimator.reset()      # 换了课程，旧的估算结果作废
+            _save_cache()          # 落盘：重启后不必重跑一次全量采集
             return self._json({'ok': True,
                                'lessons': len(course_dict.get('lessons') or []),
                                'columns': len(course_dict.get('columns') or []),
@@ -202,12 +249,20 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/estimate/cancel':
             estimator.cancel()
             return self._json(estimator.snapshot())
+        if p == '/api/bridge/progress':
+            # 取数桥在页面里把「已解析 n/m」推进来，控制台轮询显示。
+            body = self._body()
+            _BRIDGE['done'] = int(body.get('done') or 0)
+            _BRIDGE['total'] = int(body.get('total') or 0)
+            _BRIDGE['step'] = str(body.get('step') or '')[:200]
+            _BRIDGE['at'] = time.time()
+            return self._json({'ok': True})
         if p == '/api/settings':
             body = self._body()
             saved = config.save_settings(body)
             return self._json({'ok': True, 'settings': saved,
                                'path': config.SETTINGS_PATH,
-                               'note': '端口/默认目录等改了要重启 start.py 才生效'})
+                               'note': '端口/默认目录等改了要重启下载器才生效'})
         if p.startswith('/api/jobs/') and p.endswith('/cancel'):
             jid = p.split('/')[3]
             job = _manager.get(jid)
@@ -265,26 +320,115 @@ class Handler(BaseHTTPRequestHandler):
         code = code.replace('__XETDL_LOCAL__', local)
         self._send(200, code, 'application/javascript; charset=utf-8')
 
+    # ---------- 导出自带扩展 ----------
+    def _export_extension(self):
+        """把 extension/ 打成 zip 落到下载目录。
+
+        exe 是单文件，用户手上没有 extension 文件夹；这里让他点一下就能
+        在本机落出一份「可加载已解压的扩展」目录。
+        """
+        if not os.path.isdir(config.EXT_DIR):
+            return self._json({'error': 'extension 目录不存在'}, 404)
+        names = [n for n in sorted(os.listdir(config.EXT_DIR))
+                 if os.path.isfile(os.path.join(config.EXT_DIR, n))]
+        if not names:
+            return self._json({'error': 'extension 目录是空的'}, 404)
+        try:
+            dest_dir = _pick_export_dir()
+            os.makedirs(dest_dir, exist_ok=True)
+            zip_path = os.path.join(dest_dir, '小鹅通下载器-扩展.zip')
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+                for n in names:
+                    z.write(os.path.join(config.EXT_DIR, n), os.path.join('extension', n))
+        except Exception as e:
+            return self._json({'error': '%s: %s' % (type(e).__name__, e)}, 500)
+        return self._json({'ok': True, 'path': zip_path,
+                           'files': names,
+                           'howto': '解压后在同名目录加载：edge://extensions → 开发者模式 → '
+                                    '加载已解压的扩展程序'})
+
+
+def _pick_export_dir():
+    """优先落到「下载」目录，退而求其次用主目录。"""
+    home = os.path.expanduser('~')
+    for cand in (os.path.join(home, 'Downloads'), os.path.join(home, '下载'), home):
+        if os.path.isdir(cand):
+            return cand
+    return home
+
 
 class ThreadedServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Windows 的 SO_REUSEADDR 语义是「允许抢占别人已绑的端口」，
+    # 不像 Linux 那样仅仅是跳过 TIME_WAIT。开着它会导致：
+    #   ① 第二个实例也能绑上同一端口 → 端口顺延逻辑形同虚设；
+    #   ② 双轨并存时两个服务抢同一个端口，请求随机落到其中一边，
+    #      用户看到的是「配置莫名串了」。Windows 上必须关掉。
+    allow_reuse_address = not sys.platform.startswith('win')
 
 
-def serve(port=None, open_browser=True):
+def _bind(port, tries=None):
+    """绑定端口；被占就往后顺延。
+
+    双轨并存时用户可能同时开着 Python 版（8777）和 exe 版（8787），
+    或者旧服务还没退干净 —— 直接崩掉不可接受。
+    """
+    tries = tries or config.PORT_SCAN_TRIES
+    last = None
+    for p in range(port, port + max(1, tries)):
+        try:
+            httpd = ThreadedServer((config.HOST_BIND, p), Handler)
+            # 必须回读真实端口：p 可能是 0（交给系统挑），那样 p 本身没有意义
+            return httpd, httpd.server_address[1]
+        except OSError as e:
+            last = e
+    raise last if last else OSError('no free port near %d' % port)
+
+
+def serve(port=None, open_browser=True, app_window=False):
     port = port or config.DEFAULT_PORT
-    httpd = ThreadedServer((config.HOST_BIND, port), Handler)
+    httpd, port = _bind(port)
     url = 'http://%s:%d/' % (config.HOST_BIND, port)
-    print('xet-course-downloader %s' % config.VERSION)
+    print('xet-course-downloader %s  (%s)' % (config.VERSION, config.FLAVOR))
     print('控制台: %s' % url)
+    print('配置: %s' % config.SETTINGS_PATH)
+    print('ffmpeg: %s' % config.FFMPEG)
     if open_browser:
-        threading.Timer(1.0, lambda: _open(url)).start()
+        def _later():
+            if app_window and _open_app(url):
+                return
+            _open(url)
+        threading.Timer(1.0, _later).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print('\n已停止')
     finally:
         httpd.server_close()
+
+
+_APP_WINDOW_CANDIDATES = (
+    r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+    r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+)
+
+
+def _open_app(url):
+    """用 Edge/Chrome 的 --app 模式开一个无地址栏的独立窗口。
+
+    比默认浏览器标签页更像「一个 App」，也不用 Python 侧做 GUI。
+    """
+    for exe in _APP_WINDOW_CANDIDATES:
+        if os.path.isfile(exe):
+            try:
+                subprocess.Popen([exe, '--app=' + url, '--window-size=1320,940'],
+                                 **config.popen_kwargs())
+                return True
+            except Exception:
+                continue
+    return False
 
 
 def _open(url):

@@ -540,35 +540,97 @@
       var withUrls = opts.withUrls !== false;
       var withWare = opts.withWare !== false;
 
-      /* 逐个课时解析播放地址 + 课件 */
-      var chain = Promise.resolve();
-      lessons.forEach(function (l, i) {
-        chain = chain.then(function () {
-          var tag = (i + 1) + '/' + lessons.length;
-          if (l.rtype === 4) {
-            if (!withUrls) return null;
-            return resolveLookback(l.rid).then(function (r) {
-              l.playlist_url = r.url;
-              trace.push('   ' + tag + ' 回放 ' + l.title + (r.url ? ' OK' : ' 取不到：' + r.why));
-            });
-          }
-          if (l.rtype === 3) {
-            if (!withUrls) return null;
-            return resolveVod(l.rid).then(function (r) {
-              l.vod_url = r.url;
-              trace.push('   ' + tag + ' 录播 ' + l.title + (r.url ? ' OK' : ' 取不到：' + r.why));
-            });
-          }
-          if (!withWare) return null;
-          return resolveWare(l.rid).then(function (r) {
-            if (r.files.length) {
-              ware.push({ rid: l.rid, title: l.title, files: r.files });
-              trace.push('   ' + tag + ' 资料 ' + l.title + ' ' + r.files.length + ' 个附件');
-            }
+      /* 逐个课时解析播放地址 + 课件。
+       *
+       * 实测（2026-11-19）：原来是 chain = chain.then(...) 串行跑，192 节课
+       * 单节 1~2 秒 —— 全量超过 4 分钟。用户点「读取目录」后四分钟没动静，
+       * 会以为程序卡死。改成并发 5 的任务池：同一批请求实测从没触发过
+       * 11302 风控，再高没验证过所以不冒险。
+       *
+       * 单节失败仍然不中断（记 why 继续），trace 行先按课时序号收集，
+       * 最后统一排序，保证并发下日志顺序仍然可读。
+       */
+      var CONCURRENCY = 5;
+      var lineOf = {};              // i -> 该课时的 trace 行
+
+      function reportProgress(done, total) {
+        try {
+          postLocal('/api/bridge/progress', {
+            done: done, total: total, step: '解析播放地址'
+          }).catch(function () {});
+        } catch (e) { /* 本地服务没开也不影响采集 */ }
+      }
+
+      function resolveOne(l, i) {
+        var tag = (i + 1) + '/' + lessons.length;
+        var lines = [];
+        function flush() { lineOf[i] = lines.join('\n'); }
+
+        if (l.rtype === 4) {
+          if (!withUrls) { return null; }
+          return resolveLookback(l.rid).then(function (r) {
+            l.playlist_url = r.url;
+            lines.push('   ' + tag + ' 回放 ' + l.title + (r.url ? ' OK' : ' 取不到：' + r.why));
+            flush();
+          }).catch(function (e) {
+            lines.push('   ' + tag + ' 回放 ' + l.title + ' 异常：' + (e && e.message));
+            flush();
           });
+        }
+        if (l.rtype === 3) {
+          if (!withUrls) { return null; }
+          return resolveVod(l.rid).then(function (r) {
+            l.vod_url = r.url;
+            lines.push('   ' + tag + ' 录播 ' + l.title + (r.url ? ' OK' : ' 取不到：' + r.why));
+            flush();
+          }).catch(function (e) {
+            lines.push('   ' + tag + ' 录播 ' + l.title + ' 异常：' + (e && e.message));
+            flush();
+          });
+        }
+        if (!withWare) { return null; }
+        return resolveWare(l.rid).then(function (r) {
+          if (r.files.length) {
+            ware.push({ rid: l.rid, title: l.title, files: r.files });
+            lines.push('   ' + tag + ' 资料 ' + l.title + ' ' + r.files.length + ' 个附件');
+            flush();
+          }
+        }).catch(function (e) {
+          lines.push('   ' + tag + ' 资料 ' + l.title + ' 异常：' + (e && e.message));
+          flush();
         });
-      });
-      return chain.then(function () {
+      }
+
+      function runLimited(items, limit, fn, onDone) {
+        var i = 0, done = 0;
+        function step() {
+          if (i >= items.length) return Promise.resolve();
+          var k = i++;
+          return Promise.resolve(fn(items[k], k)).then(function () {
+            done++;
+            if (onDone) onDone(done, items.length, k);
+            return step();
+          }, function () {
+            /* fn 内部已吞异常；万一 shell 层还抛，也不能让整池停住 */
+            done++;
+            if (onDone) onDone(done, items.length, k);
+            return step();
+          });
+        }
+        var seed = [];
+        for (var s = 0; s < Math.min(limit, items.length); s++) seed.push(step());
+        return Promise.all(seed);
+      }
+
+      return runLimited(lessons, CONCURRENCY, resolveOne, function (done, total) {
+        if (done === total || done % 10 === 0) reportProgress(done, total);
+        if (done % 10 === 0) log('解析播放地址 ' + done + '/' + total);
+      }).then(function () {
+        for (var li = 0; li < lessons.length; li++) {
+          if (lineOf[li]) trace.push(lineOf[li]);
+        }
+        return null;
+      }).then(function () {
         /* 专栏清单带名字：服务端要靠它把 187 节课分到 14 个专栏目录里。
            没有名字的（比如 S1/S3 手动指定的）先用 id 占位，前端仍能分组。 */
         var colList = [];

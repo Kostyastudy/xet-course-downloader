@@ -11,6 +11,7 @@
   <div class="wrap">
     <h1>小鹅通课程下载器</h1>
     <div class="meta">
+      <span id="flavor" class="pill muted">—</span>
       <span id="ver" class="pill">—</span>
       <span id="ffmpeg" class="pill">检测中…</span>
       <span id="bridgeState" class="pill muted">未同步</span>
@@ -39,7 +40,11 @@
           <li>点「加载已解压的扩展程序」→ 选择项目里的 <code>extension</code> 目录</li>
           <li>在小鹅通页面点工具栏扩展图标 →「读取目录」→「同步到下载器」</li>
         </ol>
-        <p class="tip">扩展只做取数，<b>不保存账号、拿不到 Cookie</b>。</p>
+        <div class="row tight">
+          <button class="ghost" id="btnExportExt">导出自带扩展（zip）</button>
+          <span id="exportMsg" class="msg"></span>
+        </div>
+        <p class="tip">扩展只做取数，<b>不保存账号、拿不到 Cookie</b>。用的是 exe 版、手上没有 <code>extension</code> 文件夹时，点上面的按钮导出一份。</p>
       </div>
       <div class="opt">
         <h3>方式 B · 控制台一行命令<span class="tag">不想装扩展</span></h3>
@@ -155,7 +160,11 @@
     </div>
   </section>
 
-  <p class="footer muted">命令行的等价用法：<code>python start.py --run 下载计划.json --out D:\课程</code></p>
+  <p class="footer muted">
+    两种装法共用一套核心。Python 版：<code>python start.py --run 下载计划.json --out D:\课程</code>　|　
+    exe 版：<code>XetDownloader.exe --run 下载计划.json --out D:\课程</code><br>
+    两者的默认端口（8777 / 8787）和配置目录（<code>~/.xetdl</code> / <code>~/.xetdl-exe</code>）各自独立，可以同时开着。
+  </p>
 </div>
 
 <script src="/static/app.js"></script>

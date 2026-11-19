@@ -12,10 +12,14 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var state = { course: null, selected: {}, busy: false };
+  var state = { course: null, selected: {}, busy: false, base: '' };
+
+  /* 双轨并存：Python 版默认 8777，exe 版默认 8787。
+   * 两个都试，谁先通就用谁；用户手改的地址永远优先。 */
+  var CANDIDATES = ['http://127.0.0.1:8777', 'http://127.0.0.1:8787'];
 
   function base() {
-    return ($('base').value || 'http://127.0.0.1:8777').replace(/\/+$/, '');
+    return ($('base').value || state.base || 'http://127.0.0.1:8777').replace(/\/+$/, '');
   }
 
   function api(path, opts) {
@@ -49,17 +53,54 @@
   }
 
   /* ---------------- 本地服务探测 ---------------- */
+  function probe(url) {
+    return fetch(url.replace(/\/+$/, '') + '/api/health')
+      .then(function (r) { return r.json(); })
+      .then(function (h) {
+        if (!h || !h.ok) throw new Error('not ok');
+        return { base: url.replace(/\/+$/, ''), health: h };
+      });
+  }
+
+  function saveBase(url) {
+    state.base = url;
+    $('base').value = url;
+    try { chrome.storage.local.set({ xetdl_base: url }); } catch (e) {}
+  }
+
   function ping() {
-    return api('/api/health').then(function (h) {
-      setState('服务已连接', 'ok');
+    // 用户手填的地址优先；否则依次试候选端口
+    var manual = $('base').value.trim();
+    var cands = manual ? [manual] : CANDIDATES;
+    var chain = Promise.reject(new Error('start'));
+    cands.forEach(function (c) {
+      chain = chain.then(function (r) { return r; }, function () { return probe(c); });
+    });
+    return chain.then(function (r) {
+      saveBase(r.base);
+      var h = r.health;
+      var tag = h.flavor === 'exe' ? '内置版' : 'Python 版';
+      setState('服务已连接 · ' + tag + ' :' + (h.port || ''), 'ok');
       if (h.default_out && !$('out').value) $('out').value = h.default_out;
       if (h.legal) setMsg(h.legal.split('\n')[0], '');
       return true;
     }).catch(function () {
       setState('本地服务未启动', 'err');
-      setMsg('请先运行 start.py（或双击「一键启动.bat」）', 'err');
+      setMsg('请先启动下载器：exe 版双击 XetDownloader.exe；Python 版跑 start.py', 'err');
       return false;
     });
+  }
+
+  /* 启动时先读上次记住的地址，再做探测 */
+  function boot() {
+    try {
+      chrome.storage.local.get(['xetdl_base'], function (r) {
+        if (r && r.xetdl_base && !$('base').value) $('base').value = r.xetdl_base;
+        ping().then(count);
+      });
+    } catch (e) {
+      ping().then(count);
+    }
   }
 
   /* ---------------- 采集 ---------------- */

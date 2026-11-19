@@ -47,9 +47,28 @@
 
     api('/api/health').then(function (h) {
       $('ver').textContent = 'v' + (h.version || '?');
+
+      // 风味徽标：一眼分清现在连的是 Python 版（8777）还是 exe 版（8787）
+      var fl = $('flavor');
+      if (fl) {
+        var isExe = h.flavor === 'exe';
+        fl.textContent = (isExe ? '内置版' : 'Python 版') + ' · :' + (h.port || '');
+        fl.className = 'pill ' + (isExe ? 'ok' : 'muted');
+        fl.title = isExe
+          ? 'exe 版：ffmpeg/ffprobe 已内置，配置目录 ~/.xetdl-exe/'
+          : 'Python 版：ffmpeg 取自系统 PATH，配置目录 ~/.xetdl/';
+      }
+
       var f = $('ffmpeg');
-      f.textContent = h.ffmpeg ? 'ffmpeg 就绪' : '⚠ 缺少 ffmpeg';
-      f.className = 'pill ' + (h.ffmpeg ? 'ok' : 'err');
+      if (h.ffmpeg) {
+        f.textContent = h.bundled ? 'ffmpeg 内置 ✓' : 'ffmpeg 就绪';
+        f.className = 'pill ok';
+      } else {
+        f.textContent = '⚠ 缺少 ffmpeg';
+        f.className = 'pill err';
+      }
+      f.title = h.ffmpeg_path || '';
+
       if (h.legal) $('legalText').textContent = h.legal.replace(/\n/g, ' ');
       if (h.settings_path) $('settingsPath').textContent = h.settings_path;
     });
@@ -77,10 +96,28 @@
     refreshDisk();
     setInterval(refreshJobs, 1500);
     setInterval(pollEstimate, 1200);
+    setInterval(pollBridgeProgress, 1500);
   }
 
   $('copySnippet').onclick = function () {
     copy($('bridgeSnippet').textContent);
+  };
+  $('btnExportExt').onclick = function () {
+    var msg = $('exportMsg');
+    msg.textContent = '正在导出…';
+    msg.className = 'msg';
+    api('/api/export-extension').then(function (r) {
+      if (r && r.ok) {
+        msg.textContent = '已导出：' + r.path;
+        msg.className = 'msg ok';
+      } else {
+        msg.textContent = '导出失败：' + ((r && r.error) || '未知错误');
+        msg.className = 'msg err';
+      }
+    }).catch(function (e) {
+      msg.textContent = '导出失败：' + e;
+      msg.className = 'msg err';
+    });
   };
   $('copySnippetBig').onclick = function () {
     // 进阶版：把 column_ids 留空但显式指定大课包页，让 content.js 走 topic.items.get
@@ -115,6 +152,21 @@
       $('bridgeState').textContent = '未同步';
       $('bridgeState').className = 'pill muted';
     }
+  }
+
+  /* 采集进度：content.js 现在并发解析播放地址（原来是串行、192 节要 4 分钟+），
+     中途把「已解析 n/m」推进 /api/bridge/progress，这里轮询显示。 */
+  function pollBridgeProgress() {
+    if (state.course) return;         // 已经有目录了，不用再显示采集进度
+    api('/api/bridge/progress').then(function (p) {
+      if (!p || !p.total) return;
+      var fresh = p.at && (Date.now() / 1000 - p.at) < 15;
+      if (!fresh) return;             // 旧记录不显示，免得看着像卡住
+      if (state.course) return;
+      $('bridgeState').textContent =
+        (p.step || '采集中') + ' ' + p.done + '/' + p.total;
+      $('bridgeState').className = 'pill';
+    }).catch(function () {});
   }
 
   /* ---------------- 磁盘 ---------------- */
@@ -460,6 +512,33 @@
   }
 
   /* ---------------- 任务列表 ---------------- */
+  /* 速度/剩余时间：用两次轮询之间的字节差估算。
+     refreshJobs 每 1500ms 跑一次，这里只留最近约 30 秒的样本，避免早期
+     波动把速度拉偏；没有任何新字节时速度自然归零。 */
+  var SPEED_WINDOW_MS = 30000;
+  var _speed = {};          // jobId -> [{t, bytes}, ...]
+
+  function trackSpeed(j) {
+    var now = Date.now();
+    var arr = _speed[j.id] || (_speed[j.id] = []);
+    var last = arr.length ? arr[arr.length - 1] : null;
+    // 每 ≥1 秒记一个样本就够了，1500ms 轮询本来就比这慢
+    if (!last || now - last.t >= 1000) {
+      arr.push({ t: now, bytes: j.bytes || 0 });
+    }
+    while (arr.length > 1 && now - arr[0].t > SPEED_WINDOW_MS) arr.shift();
+    var a = arr[0], b = arr[arr.length - 1];
+    var dt = (b.t - a.t) / 1000;
+    return dt > 0 ? Math.max(0, (b.bytes - a.bytes) / dt) : 0;
+  }
+
+  function humanEta(sec) {
+    if (!isFinite(sec) || sec <= 0) return '—';
+    if (sec < 60) return Math.round(sec) + ' 秒';
+    if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+    return (sec / 3600).toFixed(1) + ' 小时';
+  }
+
   function refreshJobs() {
     api('/api/jobs').then(function (r) {
       var box = $('jobs');
@@ -487,11 +566,29 @@
         meta.className = 'jmeta';
         var sizeTxt = '已下 ' + human(j.bytes || 0);
         if (j.bytes_planned) sizeTxt += ' / 预计 ' + human(j.bytes_planned);
+
+        var speedTxt = '';
+        if (j.state === 'running') {
+          var sp = trackSpeed(j);
+          if (sp > 0) {
+            speedTxt = '<span>' + human(sp) + '/s';
+            if (j.bytes_planned > (j.bytes || 0)) {
+              speedTxt += '　剩余约 ' + humanEta((j.bytes_planned - j.bytes) / sp);
+            }
+            speedTxt += '</span>';
+          } else {
+            speedTxt = '<span class="muted">准备中…</span>';
+          }
+        } else {
+          delete _speed[j.id];
+        }
+
         meta.innerHTML =
           '<span>状态 <b>' + esc(j.state) + '</b></span>' +
           '<span>完成 ' + j.done + ' / ' + total + '</span>' +
           (j.failed ? '<span class="bad">失败 ' + j.failed + '</span>' : '') +
           '<span>' + sizeTxt + '</span>' +
+          speedTxt +
           '<span>' + esc(j.out_dir) + '</span>';
 
         el.appendChild(h); el.appendChild(bar); el.appendChild(meta);

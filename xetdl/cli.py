@@ -83,7 +83,8 @@ def verify_dir(path):
             r = subprocess.run([config.FFPROBE, '-v', 'error', '-show_entries',
                                 'format=duration', '-of', 'json', p],
                                capture_output=True, text=True,
-                               encoding='utf-8', errors='replace')
+                               encoding='utf-8', errors='replace',
+                               **config.popen_kwargs())
             try:
                 dur = float((json.loads(r.stdout or '{}').get('format') or {}).get('duration') or 0)
             except Exception:

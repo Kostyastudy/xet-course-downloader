@@ -8,9 +8,18 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 
 APP_NAME = 'xet-course-downloader'
-VERSION = '1.2.0'
+VERSION = '1.3.0'
+
+# ---- 部署风味（双轨并存） ----
+# py  = 源码/Python 版（python start.py、一键启动.bat）
+# exe = PyInstaller 打包版（XetDownloader.exe）
+# 两版共用同一份源码，靠这里分流默认端口与配置目录，互不覆盖。
+FLAVOR = 'exe' if getattr(sys, 'frozen', False) else 'py'
+FROZEN = (FLAVOR == 'exe')
 
 # ---- 小鹅通接口 ----
 HOST = 'https://appisa6gqvx4105.h5.xet.pomoho.com'
@@ -31,23 +40,66 @@ LOOKBACK_AUTH_REQUIRED_CODE = 11302
 DEFAULT_HOST = HOST
 
 # ---- 本地服务 ----
-DEFAULT_PORT = 8777
+# 双轨并存：Python 版默认 8777，exe 版默认 8787，两版可同时开而互不干扰。
+_DEFAULT_PORT_BY_FLAVOR = {'py': 8777, 'exe': 8787}
+DEFAULT_PORT = _DEFAULT_PORT_BY_FLAVOR[FLAVOR]
 HOST_BIND = '127.0.0.1'
+PORT_SCAN_TRIES = 12          # 端口被占时顺延尝试次数
 
 # ---- 目录 ----
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _res_dir():
+    """资源根目录。源码运行 = 仓库根；PyInstaller = sys._MEIPASS。"""
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        return meipass
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+HERE = _res_dir()
 WEB_DIR = os.path.join(HERE, 'xetdl', 'web')
 EXT_DIR = os.path.join(HERE, 'extension')
+BIN_DIR = os.path.join(HERE, 'bin')      # 打包进来的 ffmpeg/ffprobe
 
-# 默认下载根目录：用户主目录 / 小鹅通课程
+# 默认下载根目录：用户主目录 / 小鹅通课程（两版有意共用，下载本身是幂等的）
 DEFAULT_OUT = os.path.join(os.path.expanduser('~'), '小鹅通课程')
 
 # ---- 下载参数 ----
 DEFAULT_THREADS = 10          # 每讲并发分片数
 DEFAULT_JOBS = 2              # 同时下载几讲
 DEFAULT_CHUNK_MINUTES = 10    # 录播分块（分钟）
-FFMPEG = shutil.which('ffmpeg') or 'ffmpeg'
-FFPROBE = shutil.which('ffprobe') or 'ffprobe'
+
+
+def _pick_tool(name):
+    """内置 bin/ → PATH → 裸名字。exe 版优先内置，Python 版自然落到 PATH。"""
+    exe = name + ('.exe' if sys.platform.startswith('win') else '')
+    bundled = os.path.join(BIN_DIR, exe)
+    if os.path.isfile(bundled):
+        return bundled
+    return shutil.which(name) or name
+
+
+def tool_ok(path):
+    """给 /api/health 用：这个路径到底能不能跑。"""
+    if not path:
+        return False
+    p = path if os.path.isabs(path) else (shutil.which(path) or '')
+    return bool(p) and os.path.isfile(p)
+
+
+FFMPEG = _pick_tool('ffmpeg')
+FFPROBE = _pick_tool('ffprobe')
+
+
+def popen_kwargs():
+    """窗口化打包时别让 ffmpeg 子进程弹黑框。
+
+    非 frozen 直接返回 {}，对 Python 版是 no-op。
+    """
+    if not (FROZEN and sys.platform.startswith('win')):
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {'creationflags': 0x08000000, 'startupinfo': si}
 
 # ---- 教学/课程类型 ----
 TYPE_LIVE = 4        # 直播回放
@@ -65,8 +117,12 @@ LEGAL_NOTICE = (
 
 
 # ---- 用户配置文件（settings.json） ----
-SETTINGS_DIR = os.path.join(os.path.expanduser('~'), '.xetdl')
+# 双轨并存：两版各用各的目录，改一边不会影响另一边。
+_SETTINGS_DIRNAME = '.xetdl' if FLAVOR == 'py' else '.xetdl-exe'
+SETTINGS_DIR = os.path.join(os.path.expanduser('~'), _SETTINGS_DIRNAME)
 SETTINGS_PATH = os.path.join(SETTINGS_DIR, 'settings.json')
+# 课程目录落盘缓存：服务重启后不必重跑一次全量采集
+CACHE_PATH = os.path.join(SETTINGS_DIR, 'course.json')
 
 # 允许用户覆盖的键及其类型
 _SETTABLE = {

@@ -25,8 +25,8 @@ def _check_env():
         print('需要 Python %d.%d 及以上，当前是 %d.%d' % (
             MIN_PY[0], MIN_PY[1], sys.version_info[0], sys.version_info[1]))
         return False
-    if not shutil.which('ffmpeg'):
-        print('[提醒] 没找到 ffmpeg。视频合并与校验需要它：')
+    if not config.tool_ok(config.FFMPEG):
+        print('[提醒] 没找到 ffmpeg（也没有内置）。视频合并与校验需要它：')
         print('       Windows: https://www.gyan.dev/ffmpeg/builds/  下载后把 bin 目录加进 PATH')
         print('       macOS:   brew install ffmpeg')
         print('       Linux:   sudo apt install ffmpeg')
@@ -41,6 +41,8 @@ def main(argv=None):
     ap.add_argument('--port', type=int, default=config.DEFAULT_PORT,
                     help='本地服务端口（默认 %d）' % config.DEFAULT_PORT)
     ap.add_argument('--no-browser', action='store_true', help='启动后不自动打开浏览器')
+    ap.add_argument('--app-window', action='store_true',
+                    help='用 Edge/Chrome 的 --app 模式开独立窗口（打包版默认开启）')
     ap.add_argument('--run', metavar='PLAN', help='用计划 JSON 直接下载（无界面模式）')
     ap.add_argument('--out', metavar='DIR', help='配合 --run 使用的输出目录')
     ap.add_argument('--verify', metavar='DIR', help='用 ffprobe 校验目录里已归档的 mp4')
@@ -62,11 +64,14 @@ def main(argv=None):
     from xetdl import server
     print('')
     print('=' * 62)
-    print('  小鹅通课程下载器  v%s' % config.VERSION)
+    print('  小鹅通课程下载器  v%s  (%s)' % (config.VERSION, config.FLAVOR))
     print('=' * 62)
     print('  %s' % config.LEGAL_NOTICE.replace('\n', '\n  '))
     print('-' * 62)
-    server.serve(args.port, open_browser=not args.no_browser)
+    # 打包版默认开独立窗口（像 App）；源码版保持原来的「开浏览器标签页」行为
+    app_window = args.app_window or config.FROZEN
+    server.serve(args.port, open_browser=not args.no_browser,
+                 app_window=app_window)
     return 0
 
 

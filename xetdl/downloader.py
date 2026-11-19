@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import config
@@ -111,7 +112,8 @@ def probe_duration(path, retries=2):
                                 'format=duration,size:stream=codec_type',
                                 '-of', 'json', path],
                                capture_output=True, text=True, encoding='utf-8',
-                               errors='replace', timeout=180)
+                               errors='replace', timeout=180,
+                               **config.popen_kwargs())
             import json as _json
             j = _json.loads(r.stdout or '{}')
             fmt = j.get('format') or {}
@@ -141,7 +143,7 @@ def merge_verify(seg_dir, tasks, mp4):
         base + ['-c', 'copy', tmp],
     ]
     for cmd in attempts:
-        r = subprocess.run(cmd, capture_output=True)
+        r = subprocess.run(cmd, capture_output=True, **config.popen_kwargs())
         if r.returncode == 0 and os.path.exists(tmp):
             break
     if not os.path.exists(tmp):
@@ -171,19 +173,24 @@ def _unique_names(tasks):
     return out
 
 
-def _pull_segments(seg_dir, tasks, threads, progress, encrypted=False):
+def _pull_segments(seg_dir, tasks, threads, progress, encrypted=False,
+                   cancelled=None):
     """并发下载分片（已存在且合法的跳过）。返回 (done, bytes, failed_list)。
 
     encrypted=True 时跳过 TS 同步字节校验 —— AES-128 密文不是 0x47 开头，
     但体积仍然是 188 的整数倍，所以只按体积判合法性。
+
+    cancelled(): 传进来就每拉一片前问一次，真取消能立刻停下，
+    不用等整节课下完（一节课可能几十分钟）。
     """
     q = queue.Queue()
     for t in tasks:
         q.put(t)
     lock = threading.Lock()
-    st = {'done': 0, 'bytes': 0}
+    st = {'done': 0, 'bytes': 0, 'stop': False}
     failed = []
     local = threading.local()
+    last = {'t': 0.0}
 
     def ok_file(p):
         return valid_ts(p) if not encrypted else valid_seg_file(p)
@@ -195,6 +202,9 @@ def _pull_segments(seg_dir, tasks, threads, progress, encrypted=False):
 
     def worker():
         while True:
+            if cancelled and cancelled():
+                st['stop'] = True
+                return
             try:
                 _, name, url = q.get_nowait()
             except queue.Empty:
@@ -209,6 +219,9 @@ def _pull_segments(seg_dir, tasks, threads, progress, encrypted=False):
             ok = False
             why = ''
             for attempt in range(6):
+                if cancelled and cancelled():
+                    st['stop'] = True
+                    return
                 try:
                     data = http_get(url, tries=1, timeout=120)
                     if len(data) < 1000:
@@ -232,8 +245,13 @@ def _pull_segments(seg_dir, tasks, threads, progress, encrypted=False):
             if not ok:
                 with lock:
                     failed.append((name, why))
-            if progress and st['done'] % 100 == 0:
-                progress(dict(st))
+            # 每 100 片报一次；另外按时间兜底 —— 一节课只有几十片时，
+            # 光靠 %100 会让进度条全程停在 0，用户以为卡死了。
+            now = time.time()
+            if progress and (st['done'] % 100 == 0 or now - last['t'] > 0.5):
+                last['t'] = now
+                progress({'done': st['done'], 'bytes': st['bytes'],
+                          'stopped': st['stop']})
 
     ths = [threading.Thread(target=worker, daemon=True) for _ in range(threads)]
     for t in ths:
@@ -250,12 +268,33 @@ def _is_encrypted(text):
                'METHOD=NONE' not in l.upper() for l in text.split('\n'))
 
 
-def _rewrite_playlist(text, tasks, seg_dir, key_line):
-    """生成本地 m3u8：分片路径换成本地文件名，KEY 行原样保留（指向远端取密钥）。"""
+def _absolutize_key(key_line, base):
+    """把 #EXT-X-KEY 里的相对 URI 补成绝对地址。
+
+    ffmpeg 读的是 .segs 里的本地 m3u8，相对 URI 会被解析成
+    「.segs/k.bin」这种本地路径，直接取不到密钥而整段失败。
+    小鹅通线上给的是绝对地址，但别家（含本地测试样本）常给相对的，
+    这里统一兜住。
+    """
+    if not key_line or not base:
+        return key_line
+    import re
+    m = re.search(r'URI\s*=\s*"([^"]*)"', key_line)
+    if not m:
+        return key_line
+    uri = m.group(1)
+    if uri.startswith(('http://', 'https://', 'data:', 'file:')):
+        return key_line
+    full = urllib.parse.urljoin(base, uri)
+    return key_line[:m.start(1)] + full + key_line[m.end(1):]
+
+
+def _rewrite_playlist(text, tasks, seg_dir, key_line, base=''):
+    """生成本地 m3u8：分片路径换成本地文件名，KEY 行指向远端取密钥。"""
     out = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:10',
            '#EXT-X-MEDIA-SEQUENCE:0']
     if key_line:
-        out.append(key_line)
+        out.append(_absolutize_key(key_line, base))
     durs = []
     cur = 0.0
     for line in text.split('\n'):
@@ -277,7 +316,8 @@ def _rewrite_playlist(text, tasks, seg_dir, key_line):
     return '\n'.join(out) + '\n'
 
 
-def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
+def download_replay(lesson, out_dir, threads=None, progress=None, log=None,
+                    cancelled=None):
     """下载直播回放（m3u8，可能 AES-128 加密）。
 
     明文：并发拉分片 → concat 合并 → ffprobe 自检。
@@ -285,6 +325,7 @@ def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
           再让 ffmpeg 读本地 m3u8 + 远端密钥一次性解密拼接。
 
     progress(dict) 用于回报 {done,total,bytes,state,...}
+    cancelled() 可选：返回 True 时尽快停下，别把整节课下完才响应取消。
     返回 (ok, message)
     """
     log = log or log_cb
@@ -323,7 +364,10 @@ def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
             if progress:
                 progress({'state': 'downloading', 'done': st['done'], 'total': total,
                           'bytes': st['bytes'], 'round': rnd})
-        done, nbytes, failed = _pull_segments(seg_dir, tasks, threads, prog, encrypted)
+        done, nbytes, failed = _pull_segments(seg_dir, tasks, threads, prog,
+                                              encrypted, cancelled)
+        if cancelled and cancelled():
+            return False, '已取消'
         if failed:
             log('  [PART] %s 本轮 %d/%d 片失败，进入第%d轮补拉（原因示例：%s）'
                 % (lesson.title, len(failed), total, rnd + 1,
@@ -340,7 +384,7 @@ def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
         if encrypted:
             local_pl = os.path.join(seg_dir, 'local.m3u8')
             with io.open(local_pl, 'w', encoding='utf-8', newline='\n') as f:
-                f.write(_rewrite_playlist(txt, tasks, seg_dir, key_line))
+                f.write(_rewrite_playlist(txt, tasks, seg_dir, key_line, base))
             ok, bad = _merge_local_hls(local_pl, mp4, seg_dir)
         else:
             ok, bad = merge_verify(seg_dir, tasks, mp4)
@@ -376,7 +420,7 @@ def _merge_local_hls(local_pl, mp4, seg_dir):
     ]
     last_err = ''
     for cmd in attempts:
-        r = subprocess.run(cmd, capture_output=True)
+        r = subprocess.run(cmd, capture_output=True, **config.popen_kwargs())
         if r.returncode == 0 and os.path.exists(tmp):
             ok, dur, errs = probe_duration(tmp)
             if ok and len(errs) <= 20:
@@ -404,7 +448,8 @@ class _PlaylistShim(object):
         return getattr(self._l, k)
 
 
-def download_vod(lesson, out_dir, threads=None, progress=None, log=None):
+def download_vod(lesson, out_dir, threads=None, progress=None, log=None,
+                 cancelled=None):
     """下载录播（m3u8，可能是 AES-128 加密）。
 
     实测（2026-11-19）：让 ffmpeg 直接拉远端加密 HLS 只有约 0.8 倍速
@@ -419,4 +464,4 @@ def download_vod(lesson, out_dir, threads=None, progress=None, log=None):
     # 复用回放的下载器：把 vod_url 当作 playlist_url
     shim = _PlaylistShim(lesson, url)
     return download_replay(shim, out_dir, threads=threads,
-                           progress=progress, log=log)
+                           progress=progress, log=log, cancelled=cancelled)

@@ -59,15 +59,49 @@
 
 ## 系统要求
 
+两种装法要求不同，见下面「两种装法」。
+
 | 项 | 要求 | 说明 |
 |---|---|---|
-| Python | 3.8+ | 只用标准库，**不需要 pip install 任何东西** |
-| ffmpeg / ffprobe | 必需 | 合并分片 + 校验成片。Windows 到 [gyan.dev/ffmpeg](https://www.gyan.dev/ffmpeg/builds/) 下载后把 `bin` 加进 PATH |
+| Python | 3.8+ | **仅 Python 版需要**。只用标准库，不需要 pip install 任何东西 |
+| ffmpeg / ffprobe | 必需 | **exe 版已内置**，什么都不用装；Python 版需自己装 |
 | 浏览器 | Chrome / Edge / Chromium 系 | 扩展是 MV3，Edge、Chrome、Brave 都能装 |
 
 ---
 
-## 快速开始（Windows）
+## 两种装法（任选其一，可同时共存）
+
+| | **路径 E · exe 版**（推荐新手） | **路径 P · Python 版** |
+|---|---|---|
+| 怎么起 | 双击 `XetDownloader.exe` | 双击 `一键启动.bat` 或 `python start.py` |
+| 要装什么 | **什么都不用装**（ffmpeg 已内置） | Python 3.8+ 和 ffmpeg |
+| 从哪拿 | GitHub [Releases](https://github.com/Kostyastudy/xet-course-downloader/releases) 页 | 本仓库源码 |
+| 默认端口 | **8787** | **8777** |
+| 配置文件 | `~/.xetdl-exe/settings.json` | `~/.xetdl/settings.json` |
+| 窗口 | Edge 独立窗口（无地址栏，像 App） | 默认浏览器标签页 |
+| 下载目录 | `~/小鹅通课程` | `~/小鹅通课程`（同一个） |
+
+> exe **不在代码目录里**，去 Releases 页下载。Git 对单文件 >100 MiB 是硬拒绝的，
+> 所以 exe 只能走 Release 附件（上限 2 GiB，下载流量免费）。
+
+两种装法**共用同一份核心代码**（同一个 `xetdl/`），靠运行时检测自动分流，
+所以两版可以**同时开着**，端口和配置各是各的，互不覆盖。
+
+⚠️ **别同时下同一节课** —— 两版会各自写 `.segs` 分片目录，可能互相踩。
+下不同的课、或者一前一后跑，都没有问题。
+
+### exe 版首次运行
+
+1. 从 Releases 下载 `XetDownloader.exe`（约 133 MB）
+2. 双击。Windows 会弹「**Windows 已保护你的电脑**」→
+   点「更多信息」→「**仍要运行**」。
+   这是所有未签名 exe 的必经步骤（代码签名证书要花钱），不是中毒。
+3. 会弹出一个黑色控制台窗口（里面滚的是下载日志）+ 一个像 App 的窗口（界面）。
+4. 杀软若报「可疑」，选「允许」或把 exe 加进排除列表；也可以改用 `-onedir.zip` 版（误报率低）。
+
+---
+
+## 快速开始（Windows · Python 版）
 
 1. 装好 Python 3.8+（安装时勾选 *Add python.exe to PATH*）和 ffmpeg。
 2. **双击 `一键启动.bat`**。
@@ -89,7 +123,12 @@
 1. 打开 `chrome://extensions`（Edge 是 `edge://extensions`）
 2. 右上角打开「开发者模式」
 3. 点「加载已解压的扩展程序」，选择本项目的 **`extension/`** 目录
+   （**用 exe 版、手上没有这个目录？** 在控制台页面点「导出自带扩展（zip）」，
+   解压后指向解压出来的 `extension/` 目录即可）
 4. 登录你的小鹅通店铺页面，点工具栏里的扩展图标
+
+> 扩展会自动探测本地服务：先试 8777（Python 版），再试 8787（exe 版），
+> 谁在线就连谁，并把地址记住。想手动指定就在扩展弹窗里改「本地服务」那一栏。
 
 **方式 B · 一行控制台命令（不想装扩展）**
 
