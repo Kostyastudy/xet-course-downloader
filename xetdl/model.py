@@ -220,8 +220,11 @@ class Course(object):
                 if pid and pid not in groups:
                     groups.append(pid)
 
-        if len(groups) < 2:
+        if len(groups) < 2 and len(self.columns or []) < 2:
             # —— 单专栏 / 没有专栏信息：保持老结构，全平铺 ——
+            # 注意：还要看 course.columns 声明了几个专栏。只补一个大课包里
+            # 某一专栏的几节课时，lessons 里只有一个组，但仍属于多层结构，
+            # 不能退化成平铺。
             self._clear_groups()
             vid = sorted([l for l in self.lessons if l.rtype == 4], key=key)
             vod = sorted([l for l in self.lessons if l.rtype == 3], key=key)

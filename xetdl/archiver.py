@@ -126,6 +126,31 @@ def course_root(out_dir, course):
     return os.path.join(out_dir, safe_name(course.title))
 
 
+def _strip_number(name):
+    """'04_行业解析' -> '行业解析'；没有序号前缀就原样返回。"""
+    return re.sub(r'^\d{2,3}_', '', name)
+
+
+def find_group_dir(root, label):
+    """在 root 下找已有的同名专栏目录，忽略序号前缀。
+
+    补救「只下剩余几节」的场景：子集计划的专栏顺序和完整计划不同，
+    sort() 会把 04_行业解析 重新编号成 01_行业解析，导致课时落到新目录里。
+    已有的专栏目录一律优先复用，不再按新编号建一份。
+    """
+    want = safe_name(label)
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return ''
+    for name in entries:
+        if not os.path.isdir(os.path.join(root, name)):
+            continue
+        if _strip_number(name) == want:
+            return os.path.join(root, name)
+    return ''
+
+
 def group_dir(root, course, lesson):
     """多专栏（大课包）时，专栏各自一层目录；单专栏不分层。"""
     if not getattr(lesson, 'group', ''):
@@ -142,12 +167,37 @@ def group_dir(root, course, lesson):
     except ValueError:
         n = 99
     label = names.get(gid) or lesson.group_name or gid
+    existing = find_group_dir(root, label)
+    if existing:
+        return existing
     return os.path.join(root, '%02d_%s' % (n, safe_name(label)))
+
+
+def find_lesson_dir(base, title):
+    """在 base 下找已有的同名课时目录，忽略序号前缀。
+
+    和 find_group_dir 同理：只下剩余几节时 group_index 会从 01 重排，
+    但归档里已有 03_/06_/09_ 这样的编号，必须复用而不是新建。
+    """
+    want = safe_name(title)
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return ''
+    for name in entries:
+        if not os.path.isdir(os.path.join(base, name)):
+            continue
+        if _strip_number(name) == want:
+            return os.path.join(base, name)
+    return ''
 
 
 def lesson_dir(root, lesson, course=None):
     """课时目录。传入 course 时，若课时属于某个子专栏会多套一层。"""
     base = group_dir(root, course, lesson) if course is not None else root
+    existing = find_lesson_dir(base, lesson.title)
+    if existing:
+        return existing
     return os.path.join(base, lesson.folder)
 
 

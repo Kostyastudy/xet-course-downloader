@@ -25,7 +25,11 @@ def log_cb(*a, **k):
 
 
 def http_get(url, tries=6, timeout=120):
-    """带重试的 GET，返回 bytes。"""
+    """带重试的 GET，返回 bytes。
+
+    必须分块读：大 m3u8（实测 320 KB）一次性 r.read() 会抛
+    http.client.IncompleteRead，导致这节直接判失败、一片都不下。
+    """
     last = None
     for i in range(tries):
         try:
@@ -33,7 +37,16 @@ def http_get(url, tries=6, timeout=120):
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 if r.status != 200:
                     raise RuntimeError('HTTP %s' % r.status)
-                return r.read()
+                buf = []
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    buf.append(chunk)
+                data = b''.join(buf)
+                if not data:
+                    raise RuntimeError('empty body')
+                return data
         except Exception as e:
             last = '%s: %s' % (type(e).__name__, e)
             time.sleep(min(1.0 * (i + 1), 8))
@@ -59,6 +72,19 @@ def valid_ts(path):
         with open(path, 'rb') as f:
             head = f.read(188)
         return bool(head) and head[0] == 0x47
+    except Exception:
+        return False
+
+
+def valid_seg_file(path):
+    """加密分片只按体积判合法。
+
+    密文首字节不是 0x47，长度也不保证是 188 的整数倍
+    （小鹅通用「同一文件 + Range 参数」切片，按 AES 块 16 字节对齐）。
+    """
+    try:
+        sz = os.path.getsize(path)
+        return sz >= 1000 and sz % 16 == 0
     except Exception:
         return False
 
@@ -127,8 +153,30 @@ def merge_verify(seg_dir, tasks, mp4):
     return True, len(errs)
 
 
-def _pull_segments(seg_dir, tasks, threads, progress):
-    """并发下载分片（已存在且合法的跳过）。返回 (done, bytes, failed_list)。"""
+def _unique_names(tasks):
+    """给小鹅通「同一文件 + Range 参数」的分片补唯一序号名。
+
+    有的 m3u8 里 2000+ 个分片全叫 v.f146750_0.ts，只有 start/end 不同。
+    若按原文件名落盘，第一个下完其余全被当成「已存在」跳过 —— 只会得到 1 片。
+    """
+    names = [n for _, n, _ in tasks]
+    if len(set(names)) == len(names):
+        return tasks
+    out = []
+    for i, (_, n, u) in enumerate(tasks):
+        stem, ext = os.path.splitext(n)
+        if not ext:
+            ext = '.ts'
+        out.append((i, '%s_%05d%s' % (stem, i, ext), u))
+    return out
+
+
+def _pull_segments(seg_dir, tasks, threads, progress, encrypted=False):
+    """并发下载分片（已存在且合法的跳过）。返回 (done, bytes, failed_list)。
+
+    encrypted=True 时跳过 TS 同步字节校验 —— AES-128 密文不是 0x47 开头，
+    但体积仍然是 188 的整数倍，所以只按体积判合法性。
+    """
     q = queue.Queue()
     for t in tasks:
         q.put(t)
@@ -136,6 +184,9 @@ def _pull_segments(seg_dir, tasks, threads, progress):
     st = {'done': 0, 'bytes': 0}
     failed = []
     local = threading.local()
+
+    def ok_file(p):
+        return valid_ts(p) if not encrypted else valid_seg_file(p)
 
     def sess():
         if not hasattr(local, 's'):
@@ -149,19 +200,23 @@ def _pull_segments(seg_dir, tasks, threads, progress):
             except queue.Empty:
                 return
             dest = os.path.join(seg_dir, name)
-            if os.path.exists(dest) and valid_ts(dest):
+            if os.path.exists(dest) and ok_file(dest):
                 with lock:
                     st['done'] += 1
                     st['bytes'] += os.path.getsize(dest)
                 continue
             tmp = dest + '.part'
             ok = False
+            why = ''
             for attempt in range(6):
                 try:
                     data = http_get(url, tries=1, timeout=120)
                     if len(data) < 1000:
                         raise RuntimeError('too small %d' % len(data))
-                    if not valid_ts_bytes(data):
+                    if encrypted:
+                        if len(data) % 16 != 0:
+                            raise RuntimeError('密文体积不是 16 的整数倍 (%d)' % len(data))
+                    elif not valid_ts_bytes(data):
                         raise RuntimeError('不是合法 TS 分片 (%d bytes)' % len(data))
                     with open(tmp, 'wb') as f:
                         f.write(data)
@@ -171,11 +226,12 @@ def _pull_segments(seg_dir, tasks, threads, progress):
                         st['bytes'] += len(data)
                     ok = True
                     break
-                except Exception:
+                except Exception as e:
+                    why = repr(e)
                     time.sleep(min(0.8 * (attempt + 1), 6))
             if not ok:
                 with lock:
-                    failed.append(name)
+                    failed.append((name, why))
             if progress and st['done'] % 100 == 0:
                 progress(dict(st))
 
@@ -189,8 +245,44 @@ def _pull_segments(seg_dir, tasks, threads, progress):
     return st['done'], st['bytes'], failed
 
 
+def _is_encrypted(text):
+    return any(l.strip().upper().startswith('#EXT-X-KEY') and
+               'METHOD=NONE' not in l.upper() for l in text.split('\n'))
+
+
+def _rewrite_playlist(text, tasks, seg_dir, key_line):
+    """生成本地 m3u8：分片路径换成本地文件名，KEY 行原样保留（指向远端取密钥）。"""
+    out = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:10',
+           '#EXT-X-MEDIA-SEQUENCE:0']
+    if key_line:
+        out.append(key_line)
+    durs = []
+    cur = 0.0
+    for line in text.split('\n'):
+        line = line.strip()
+        if line.startswith('#EXTINF'):
+            try:
+                cur = float(line.split(':', 1)[1].split(',')[0])
+            except Exception:
+                cur = 0.0
+        elif line.startswith('#EXT-X-ENDLIST'):
+            continue
+        elif line and not line.startswith('#'):
+            durs.append(cur)
+    for i, (_, name, _) in enumerate(tasks):
+        d = durs[i] if i < len(durs) else 0.0
+        out.append('#EXTINF:%.6f,' % d)
+        out.append(name)
+    out.append('#EXT-X-ENDLIST')
+    return '\n'.join(out) + '\n'
+
+
 def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
-    """下载直播回放（明文 m3u8，分片自带签名）。
+    """下载直播回放（m3u8，可能 AES-128 加密）。
+
+    明文：并发拉分片 → concat 合并 → ffprobe 自检。
+    加密：并发拉【密文】分片（远端不重复解密，走满带宽），
+          再让 ffmpeg 读本地 m3u8 + 远端密钥一次性解密拼接。
 
     progress(dict) 用于回报 {done,total,bytes,state,...}
     返回 (ok, message)
@@ -214,19 +306,45 @@ def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
         return False, '播放列表为空'
     tasks = [(i, s.split('?')[0].split('/')[-1], (s if s.startswith('http') else base + s))
              for i, s in enumerate(segs)]
+    tasks = _unique_names(tasks)
     total = len(tasks)
+
+    encrypted = _is_encrypted(txt)
+    key_line = ''
+    if encrypted:
+        for line in txt.split('\n'):
+            if line.strip().upper().startswith('#EXT-X-KEY'):
+                key_line = line.strip()
+                break
+        log('  [ENC] %s 为 AES-128 加密，走「并发拉密文 + ffmpeg 解密拼接」' % lesson.title)
 
     for rnd in range(1, 4):
         def prog(st, rnd=rnd):
             if progress:
                 progress({'state': 'downloading', 'done': st['done'], 'total': total,
                           'bytes': st['bytes'], 'round': rnd})
-        done, nbytes, failed = _pull_segments(seg_dir, tasks, threads, prog)
+        done, nbytes, failed = _pull_segments(seg_dir, tasks, threads, prog, encrypted)
         if failed:
-            return False, '%d 个分片下载失败' % len(failed)
+            log('  [PART] %s 本轮 %d/%d 片失败，进入第%d轮补拉（原因示例：%s）'
+                % (lesson.title, len(failed), total, rnd + 1,
+                   failed[0][1] if isinstance(failed[0], tuple) else failed[0]))
+            for name, why in [(f if isinstance(f, tuple) else (f, '')) for f in failed[:5]]:
+                log('         - %s %s' % (name, why))
+            if rnd >= 3:
+                return False, '%d 个分片下载失败（重试 3 轮）' % len(failed)
+            time.sleep(3)
+            continue
         if progress:
             progress({'state': 'merging', 'done': done, 'total': total, 'bytes': nbytes})
-        ok, bad = merge_verify(seg_dir, tasks, mp4)
+
+        if encrypted:
+            local_pl = os.path.join(seg_dir, 'local.m3u8')
+            with io.open(local_pl, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(_rewrite_playlist(txt, tasks, seg_dir, key_line))
+            ok, bad = _merge_local_hls(local_pl, mp4, seg_dir)
+        else:
+            ok, bad = merge_verify(seg_dir, tasks, mp4)
+
         if ok:
             shutil.rmtree(seg_dir, ignore_errors=True)
             shutil.rmtree(os.path.join(out_dir, '.segs'), ignore_errors=True)
@@ -238,6 +356,39 @@ def download_replay(lesson, out_dir, threads=None, progress=None, log=None):
         shutil.rmtree(seg_dir, ignore_errors=True)
         os.makedirs(seg_dir, exist_ok=True)
     return False, '重试 3 轮仍失败'
+
+
+def _merge_local_hls(local_pl, mp4, seg_dir):
+    """ffmpeg 读本地 m3u8（分片在本地，密钥从远端取）解密并拼接。"""
+    tmp = mp4 + '.tmp.mp4'
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    base = [config.FFMPEG, '-y', '-allowed_extensions', 'ALL',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto,httpproxy',
+            '-i', local_pl, '-c', 'copy']
+    attempts = [
+        base + ['-bsf:a', 'aac_adtstoasc', '-movflags', '+faststart', tmp],
+        base + ['-bsf:a', 'aac_adtstoasc', tmp],
+        base + [tmp],
+    ]
+    last_err = ''
+    for cmd in attempts:
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode == 0 and os.path.exists(tmp):
+            ok, dur, errs = probe_duration(tmp)
+            if ok and len(errs) <= 20:
+                os.replace(tmp, mp4)
+                return True, len(errs)
+        last_err = (r.stderr or b'').decode('utf-8', 'replace')[-300:]
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return False, -1 if last_err else 0
 
 
 def download_vod(lesson, out_dir, progress=None, log=None):
