@@ -179,7 +179,8 @@ def _download_videos(job, root, status):
                     ok, msg = downloader.download_replay(
                         l, ldir, job.threads, prog, job.log)
                 else:
-                    ok, msg = downloader.download_vod(l, ldir, prog, job.log)
+                    ok, msg = downloader.download_vod(
+                        l, ldir, job.threads, prog, job.log)
             except Exception as e:
                 ok, msg = False, '%s: %s' % (type(e).__name__, e)
             if job.cancelled:

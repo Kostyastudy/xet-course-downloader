@@ -391,31 +391,32 @@ def _merge_local_hls(local_pl, mp4, seg_dir):
     return False, -1 if last_err else 0
 
 
-def download_vod(lesson, out_dir, progress=None, log=None):
-    """下载录播（AES-128 m3u8）。用 ffmpeg 直拉，签名现取现用。"""
+class _PlaylistShim(object):
+    """把录播的 vod_url 伪装成 playlist_url，复用 download_replay。"""
+
+    def __init__(self, lesson, url):
+        self._l = lesson
+        self.playlist_url = url
+        self.rid = lesson.rid
+        self.title = lesson.title
+
+    def __getattr__(self, k):
+        return getattr(self._l, k)
+
+
+def download_vod(lesson, out_dir, threads=None, progress=None, log=None):
+    """下载录播（m3u8，可能是 AES-128 加密）。
+
+    实测（2026-11-19）：让 ffmpeg 直接拉远端加密 HLS 只有约 0.8 倍速
+    （≈实时播放，因为 ffmpeg 单线程串行解密）。录播和直播回放本质都是
+    HLS，所以这里直接复用 download_replay 的「并发拉密文 + 本地 m3u8
+    + ffmpeg 一次解密拼接」方案，速度能跑满带宽。
+    """
     log = log or log_cb
     url = lesson.vod_url
     if not url:
         return False, '缺少录播地址'
-    os.makedirs(out_dir, exist_ok=True)
-    mp4 = os.path.join(out_dir, '视频.mp4')
-    tmp = mp4 + '.tmp.mp4'
-    if progress:
-        progress({'state': 'downloading', 'done': 0, 'total': 0, 'bytes': 0})
-    cmd = [config.FFMPEG, '-y', '-allowed_extensions', 'ALL',
-           '-protocol_whitelist', 'file,http,https,tcp,tls,crypto,httpproxy',
-           '-i', url, '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
-           '-movflags', '+faststart', tmp]
-    r = subprocess.run(cmd, capture_output=True)
-    if r.returncode != 0 or not os.path.exists(tmp):
-        return False, 'ffmpeg 失败: %s' % (r.stderr or b'')[-300:].decode('utf-8', 'replace')
-    ok, dur, errs = probe_duration(tmp)
-    if not ok:
-        if os.path.getsize(tmp) > 10 * 1024 * 1024:
-            os.replace(tmp, mp4)
-            log('  [WARN] %s ffprobe 读不出时长，按体积收下' % lesson.title)
-            return True, 'ok(未校验)'
-        return False, 'ffprobe 校验不通过'
-    os.replace(tmp, mp4)
-    log('  [OK] %s -> %s (%.1f 分钟)' % (lesson.title, os.path.basename(out_dir), dur / 60))
-    return True, 'ok'
+    # 复用回放的下载器：把 vod_url 当作 playlist_url
+    shim = _PlaylistShim(lesson, url)
+    return download_replay(shim, out_dir, threads=threads,
+                           progress=progress, log=log)
